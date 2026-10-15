@@ -63,7 +63,7 @@ def check_live_evidence(result: dict) -> bool:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="Stage-one agent harness (no Web, files, or shell tools)")
+    root = argparse.ArgumentParser(description="Local agent harness with rules, plans, memory and bounded files (no Web or shell)")
     commands = root.add_subparsers(dest="command", required=True)
     for name in ("run", "live-check"):
         command = commands.add_parser(name)

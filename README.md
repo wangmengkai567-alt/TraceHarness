@@ -1,16 +1,16 @@
-# AI Agent Harness MVP — 阶段一
+# AI Agent Harness MVP — 阶段二
 
 已实现 Python 的最小运行核心：任务 → 模型 → 受控工具 → 反馈 → 终态。模型使用 OpenAI 兼容的 Chat Completions 工具协议，模型及服务地址由用户配置。
 
-包含配置、有限请求重试、轮数/调用数/总时长/请求超时/输入输出限制、取消、结构化工具结果和本地事件记录。阶段一不包含 Web、`AGENTS.md` 加载、规划/任务记忆、文件工具、shell 或 Tavily 工具。
+包含配置、有限请求重试、运行预算、取消和事件记录，以及根目录 `AGENTS.md` 冻结快照、可调整计划、带来源的任务记忆、受限上下文和工作目录内的文本文件工具。尚无 Web、shell 或 Tavily 工具。
 
-工程检查与模拟 HTTP 验收已通过；真实模型验收等待本地接口和密钥配置，两种验收不能相互替代。
+阶段二的执行器测试、真实模型验收与限制见 [阶段二验收](docs/STAGE_TWO_ACCEPTANCE.md)；设计见 [阶段二设计](docs/STAGE_TWO_DESIGN.md)。
 
 ## 启动
 
 本项目使用 **conda** 管理环境，环境名称为 `harness`，Python 3.12。克隆仓库后，先进入仓库根目录，再在已初始化 conda 的 PowerShell 或 Anaconda Prompt 中运行：
 
-环境由你自行创建与激活。2026-10-15 已改为 conda 加源码直接运行；35 项执行器检查已在已有 Python 环境复验，尚未在新 conda 环境复验。程序仅使用真实 LLM，没有 demo 模型或离线兜底。
+环境使用 conda 加源码直接运行；本次检查在已有 harness conda 环境执行。程序仅使用真实 LLM，没有 demo 模型或离线兜底。
 
 ```powershell
 conda env create -f environment.yml
@@ -33,7 +33,7 @@ python -m pip install -r requirements.txt
 conda run -n harness python -m harness run --env-file .env --task "使用工具计算 47+58，再把结果乘以3。"
 ```
 
-阶段一工具为 `add_integers` 和 `multiply_integers`，执行真实整数运算，校验参数且不使用 eval。它们用于验证真实 LLM → 工具 → 结果反馈 → 后续调用的闭环，不代表已具备文件操作或联网能力。
+阶段一工具为 `add_integers` 和 `multiply_integers`，执行真实整数运算，校验参数且不使用 eval。它们继续用于验证真实 LLM → 工具 → 结果反馈 → 后续调用的闭环。阶段二新增文件工具；尚无联网工具。
 
 ## 配置真实模型
 
@@ -63,7 +63,7 @@ python -m harness live-check --env-file .env --config config.example.json
 python -m harness run --env-file .env --task "先用工具计算47+58，再用返回值乘以3，报告结果。"
 ```
 
-`run` 必须显式提供 `--task`，没有预置业务任务或模拟 provider。阶段一不能完成需要文件、联网搜索或 shell 的任务。
+`run` 必须显式提供 `--task`，没有预置业务任务或模拟 provider。文件任务使用 `--workspace <目录>` 指定边界；联网搜索和 shell 尚未接入。
 
 配置优先级：命令行覆盖项 > 现有进程环境 > 显式 `.env` > JSON 配置 > 默认值。不会自动寻找父目录 `.env`；需传入 `--env-file`。JSON 使用 `config.example.json` 中的字段，未知字段（包括密钥字段）会被拒绝。
 
@@ -75,7 +75,9 @@ python -m harness run --env-file .env --task "先用工具计算47+58，再用�
 
 - `metadata.json`：任务、工作目录、配置快照、运行类型；不包含密钥。
 - `events.jsonl`：连续序号的请求、响应、工具反馈、错误和重试事件。
-- `result.json`：最终状态、答案、用量（若模型提供）与耗时。
+- `result.json`：最终状态、答案、计划/记忆、用量（若模型提供）与耗时。
+- `rules.json`：根目录规范内容与原始字节 SHA256；下次运行才加载修改。
+- `state.json`：最新计划和任务内记忆；事件包含调整原因和历史。
 
 ```powershell
 python -m harness inspect <run-id> --events
@@ -85,7 +87,7 @@ python -m harness inspect <run-id> --events
 
 运行中按 Ctrl+C 发出取消信号：停止后续操作，取消等待中的请求/退避，并尽量保存取消终态。嵌入应用可向 `Runner.run` 传入 `asyncio.Event`。远端模型是否已消耗用量，不因客户端取消而得到保证。
 
-正常模型结束为 `unverified`，因为阶段一尚未配置通用结果验证器。其他终态为 `failed`、`cancelled`、`budget_exceeded`。无终态文件时查看器报告 `no_terminal_result`：可能仍在运行，也可能意外中断，不会误报完成或自动续跑。
+正常模型结束为 `unverified`，因为尚未配置通用结果验证器。其他终态为 `failed`、`cancelled`、`budget_exceeded`。无终态文件时查看器报告 `no_terminal_result`：可能仍在运行，也可能意外中断，不会误报完成或自动续跑。
 
 退出码：正常结束 0、执行失败/预算耗尽/闭环验收失败 1、配置或文件错误 2、用户取消 130。
 
@@ -100,3 +102,19 @@ python -m pip check
 测试使用标准库 `unittest`。HTTP 集成测试使用真实本地 socket，但服务返回模拟响应，未连接真实 LLM。
 
 参考：[分阶段计划](HARNESS_MVP_IMPLEMENTATION_PLAN.md)、[阶段一设计](docs/STAGE_ONE_DESIGN.md)、[阶段一验收记录](docs/STAGE_ONE_ACCEPTANCE.md)。
+
+## 阶段二文件任务
+
+先准备独立工作目录，放入材料及可选的根目录 `AGENTS.md`。模型先用 `update_plan` 建立步骤，再调用 `list_files`、`read_file`、`write_file`，通过 `update_memory` 保留带来源的事实、推测和进度。
+
+```powershell
+python -m harness run --env-file .env --workspace examples/stage_two --task "读取 input.txt，记录发现并按 AGENTS.md 创建 summary.txt，读取产物核对并更新计划。"
+# 完整真实模型验收，复制样例到 runs 中，保留检查记录：
+python -m tests.live_stage_two
+```
+
+现有文件写入须提供读取时返回的 `sha256` 作为 `expected_hash`；新文件使用 null。文件默认最多 64 KiB，规则最多 16 KiB，目录最多 200 项；完整读取超限拒绝，工具输出过长明确标记 truncated。已有 UTF-8 BOM 与 LF/CRLF 保留，新文件 UTF-8 无 BOM、LF。更多编码、混合换行和大文件暂不支持。
+
+`config.example.json` 新增 `max_file_bytes`、`max_rules_bytes`、`max_directory_entries`、`recent_history_turns`、`max_state_chars`。默认保留最近 4 轮完整交互；规范、任务、计划和记忆始终进入输入，超过总输入预算明确结束。复杂任务可适当提高轮数和 completion token 上限；真实验收脚本使用 20 轮、4096 completion tokens。
+
+文件工具限制面向可信本地目录，不能替代沙箱；已有文件写入使用哈希冲突检测和文件锁，不能保证恶意外部修改下的无竞态事务。记录持久化不代表支持续跑。详细限制见阶段二设计文档。

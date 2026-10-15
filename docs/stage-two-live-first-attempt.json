@@ -1,0 +1,17 @@
+{
+  "provider": "openai_compatible",
+  "model": "qwen3.8-flash",
+  "run_id": "f084cb2f0ff84c92864b8e25952393e7",
+  "status": "failed",
+  "reason": "model_request_timeout",
+  "checks": {
+    "terminal_unverified": false,
+    "artifact_rules": true,
+    "plan_recorded": true,
+    "memory_in_later_request": true,
+    "artifact_read_back": true
+  },
+  "workspace": "runs\\stage-two-workspace-c5a13a2e03e141a59d6e18297b5f9e31",
+  "run_directory": "D:\\My_workspace\\harness\\runs\\f084cb2f0ff84c92864b8e25952393e7",
+  "passed": false
+}

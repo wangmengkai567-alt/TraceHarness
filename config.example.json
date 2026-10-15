@@ -15,5 +15,10 @@
   "max_response_bytes": 262144,
   "max_completion_tokens": 1024,
   "completion_token_parameter": "max_tokens",
-  "runs_dir": "runs"
+  "runs_dir": "runs",
+  "max_file_bytes": 65536,
+  "max_rules_bytes": 16384,
+  "max_directory_entries": 200,
+  "recent_history_turns": 4,
+  "max_state_chars": 16000
 }

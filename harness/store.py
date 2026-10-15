@@ -35,7 +35,7 @@ class RunStore:
     def write_json(self, name: str, payload: dict) -> None:
         destination = self.directory / name
         temporary = destination.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as stream:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
             json.dump(self.redact(payload), stream, ensure_ascii=False, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
@@ -44,7 +44,7 @@ class RunStore:
     def emit(self, kind: str, **data) -> None:
         event = {"sequence": self.sequence + 1, "run_id": self.run_id,
                  "timestamp": utc_now(), "type": kind, "data": data}
-        with (self.directory / "events.jsonl").open("a", encoding="utf-8") as stream:
+        with (self.directory / "events.jsonl").open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(json.dumps(self.redact(event), ensure_ascii=False) + "\n")
             stream.flush()
             os.fsync(stream.fileno())

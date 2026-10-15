@@ -29,6 +29,11 @@ class Config:
     max_completion_tokens: int = 1024
     completion_token_parameter: str = "max_tokens"
     runs_dir: str = "runs"
+    max_file_bytes: int = 65536
+    max_rules_bytes: int = 16384
+    max_directory_entries: int = 200
+    recent_history_turns: int = 4
+    max_state_chars: int = 16000
 
     def validate(self) -> None:
         if self.provider != "openai_compatible":
@@ -42,6 +47,8 @@ class Config:
             "max_turns", "max_model_calls", "max_tool_calls_per_turn",
             "max_input_chars", "max_output_chars", "max_response_bytes",
             "max_completion_tokens",
+            "max_file_bytes", "max_rules_bytes", "max_directory_entries",
+            "recent_history_turns", "max_state_chars",
         )
         for name in integers:
             value = getattr(self, name)
