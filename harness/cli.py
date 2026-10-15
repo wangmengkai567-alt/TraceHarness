@@ -63,7 +63,7 @@ def check_live_evidence(result: dict) -> bool:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="Local agent harness with rules, plans, memory and bounded files (no Web or shell)")
+    root = argparse.ArgumentParser(description="Local agent harness with Web, rules, plans, memory and bounded files (no shell)")
     commands = root.add_subparsers(dest="command", required=True)
     for name in ("run", "live-check"):
         command = commands.add_parser(name)
@@ -76,6 +76,10 @@ def parser() -> argparse.ArgumentParser:
     inspect.add_argument("run_id")
     inspect.add_argument("--runs-dir", type=Path, default=Path("runs"))
     inspect.add_argument("--events", action="store_true")
+    web = commands.add_parser("serve", help="Start loopback-only Web task UI")
+    web.add_argument("--config", type=Path)
+    web.add_argument("--env-file", type=Path)
+    web.add_argument("--port", type=int, default=8765)
     return root
 
 
@@ -84,6 +88,12 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     args = parser().parse_args(argv)
     try:
+        if args.command == "serve":
+            from .web import serve
+            if not 1 <= args.port <= 65535:
+                raise ValueError("port must be between 1 and 65535")
+            asyncio.run(serve(load_config(args.config, args.env_file), args.port))
+            return 0
         if args.command == "inspect":
             if not re.fullmatch(r"[0-9a-f]{32}", args.run_id):
                 raise ValueError("run_id must be the 32-character ID produced by harness")

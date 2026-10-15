@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness · 本地任务</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header><div><span class="eyebrow">AI AGENT HARNESS / MVP</span><h1>本地任务工作台</h1></div><span class="badge">阶段三 · 本地单用户</span></header>
+  <main>
+    <aside>
+      <section><h2>新建任务</h2>
+        <form id="task-form">
+          <label for="workspace">工作目录</label><input id="workspace" required placeholder="已有目录的绝对路径" autocomplete="off">
+          <label for="task">任务要求</label><textarea id="task" rows="7" required placeholder="描述目标、产物及完成条件"></textarea>
+          <button id="start" type="submit">开始模型任务</button>
+          <button id="demo" type="button" class="secondary">模拟审批演练</button>
+        </form>
+        <p class="muted">一次运行一个任务。模型配置来自服务启动时的配置文件或环境变量。</p>
+      </section>
+      <section><label for="history">查看运行记录</label><select id="history"><option value="">请选择运行</option></select><p class="muted">刷新恢复轨迹；关闭页面不会取消任务。模拟演练不调用模型或执行命令。</p></section>
+    </aside>
+    <div class="content">
+      <div id="error" role="alert" hidden></div>
+      <section><div class="section-title"><h2>运行概览</h2><button id="cancel" class="danger" disabled>取消运行</button></div>
+        <p id="status" role="status" aria-live="polite">尚未选择运行</p><p id="run-meta" class="muted"></p><p id="run-limits" class="muted"></p>
+        <details><summary>任务与配置快照</summary><pre id="metadata">暂无记录</pre></details>
+      </section>
+      <section id="approval-section" hidden><h2>待审批 · 模拟调用</h2><pre id="approval"></pre><div class="actions"><button id="approve">批准模拟操作</button><button id="reject" class="secondary">拒绝</button></div><p class="muted">批准仅记录模拟完成，不执行真实 shell。决定只对本次运行、本次审批有效。</p></section>
+      <section><h2>执行计划</h2><ol id="plan"><li class="muted">尚无计划</li></ol><details><summary>任务内记忆</summary><pre id="memory">暂无记录</pre></details></section>
+      <section><h2>项目规范</h2><p id="rules-version" class="muted">尚未加载</p><details><summary>查看本次规则快照</summary><pre id="rules">暂无记录</pre></details></section>
+      <section><h2>结果与产物</h2><p id="verification" class="muted">尚无检查结果</p><pre id="answer">等待结果</pre><h3>文件写入记录</h3><ul id="artifacts"><li class="muted">暂无产物</li></ul><p class="muted">产物清单来自成功的写入事件；文件之后可能被外部修改。模型报告的检查依据见下方轨迹。</p></section>
+      <section><div class="section-title"><h2>执行轨迹</h2><span id="event-count" class="muted">0 条事件</span></div><p class="muted">按事件序号展示。展开查看参数、反馈、错误与重试；长详情明确截断。轨迹中的文本不会作为 HTML 执行。</p><div id="events"></div></section>
+    </div>
+  </main>
+</body>
+</html>

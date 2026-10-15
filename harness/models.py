@@ -73,9 +73,11 @@ class OpenAICompatibleModel:
         self.transport = transport
 
     async def complete(self, messages: list[dict], tools: list[dict]) -> ModelReply:
-        payload = {"model": self.config.model, "messages": messages,
-                   "tools": tools, "tool_choice": "auto", "stream": False,
+        payload = {"model": self.config.model, "messages": messages, "stream": False,
                    self.config.completion_token_parameter: self.config.max_completion_tokens}
+        # Omitting tools supports providers that reject an empty tools array.
+        if tools:
+            payload.update(tools=tools, tool_choice="auto")
         try:
             async with httpx.AsyncClient(timeout=self.config.request_timeout_seconds,
                                          follow_redirects=False,

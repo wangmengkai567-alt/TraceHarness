@@ -1,10 +1,10 @@
-# AI Agent Harness MVP — 阶段二
+# AI Agent Harness MVP — 阶段三
 
 已实现 Python 的最小运行核心：任务 → 模型 → 受控工具 → 反馈 → 终态。模型使用 OpenAI 兼容的 Chat Completions 工具协议，模型及服务地址由用户配置。
 
-包含配置、有限请求重试、运行预算、取消和事件记录，以及根目录 `AGENTS.md` 冻结快照、可调整计划、带来源的任务记忆、受限上下文和工作目录内的文本文件工具。尚无 Web、shell 或 Tavily 工具。
+包含配置、有限请求重试、运行预算、取消和事件记录，以及根目录 `AGENTS.md` 冻结快照、可调整计划、带来源的任务记忆、受限上下文和工作目录内的文本文件工具。已加入本地 Web 任务工作台、执行轨迹、取消和模拟审批；尚无真实 shell 或 Tavily 工具。
 
-阶段二的执行器测试、真实模型验收与限制见 [阶段二验收](docs/STAGE_TWO_ACCEPTANCE.md)；设计见 [阶段二设计](docs/STAGE_TWO_DESIGN.md)。
+阶段三使用方法与验收见 [阶段三验收](docs/STAGE_THREE_ACCEPTANCE.md)，架构与接口边界见 [阶段三设计](docs/STAGE_THREE_DESIGN.md)。阶段二记录保留于 [阶段二验收](docs/STAGE_TWO_ACCEPTANCE.md)。
 
 ## 启动
 
@@ -118,3 +118,37 @@ python -m tests.live_stage_two
 `config.example.json` 新增 `max_file_bytes`、`max_rules_bytes`、`max_directory_entries`、`recent_history_turns`、`max_state_chars`。默认保留最近 4 轮完整交互；规范、任务、计划和记忆始终进入输入，超过总输入预算明确结束。复杂任务可适当提高轮数和 completion token 上限；真实验收脚本使用 20 轮、4096 completion tokens。
 
 文件工具限制面向可信本地目录，不能替代沙箱；已有文件写入使用哈希冲突检测和文件锁，不能保证恶意外部修改下的无竞态事务。记录持久化不代表支持续跑。详细限制见阶段二设计文档。
+
+## 阶段三 Web 工作台
+
+激活 conda 环境、安装新增依赖并填写本机 `.env` 后启动：
+
+```powershell
+conda activate harness
+python -m pip install -r requirements.txt
+python -m harness serve --env-file .env --config config.example.json
+# 可用 --port 8766 更换端口
+```
+
+打开终端给出的 `http://127.0.0.1:8765`，填写已有工作目录及任务，点击“开始模型任务”。页面展示状态、规范快照、计划/调整原因、记忆、工具参数/反馈、模型回复、错误/重试、最终答案、产物与检查说明。长详情可展开，超限明确截断；全部动态内容按文本展示。
+
+“模拟审批演练”独立测试批准、拒绝、取消与时限，不调用模型，不执行真实命令或写工作目录。一次只能运行一个模型任务或演练。审批默认等待 60 秒，也受总时限约束；重复或失效决定由后端拒绝。
+
+刷新或重开页面可恢复所选轨迹，不会重复启动任务；历史运行可用下拉框切换。关闭页面不等于取消，需使用“取消运行”；界面先显示“正在取消”，等后端终态落盘后才显示“已取消”。停止服务用 Ctrl+C，后端通知活动任务取消。服务重启后请刷新页面获取新会话；没有终态的旧记录显示中断，不自动续跑或恢复审批。
+
+服务只绑定 127.0.0.1，请使用终端提供的精确地址（localhost 别名会被 Host 校验拒绝）。接口要求同源请求与会话 token，未开放 CORS、远程部署、账户或多 worker。运行时限和模型仍通过环境变量/JSON 配置，Web 不提供模型配置后台。
+
+```powershell
+# 服务运行时，通过 API 启动新的真实模型样例任务并验收：
+python -m tests.live_stage_three
+# 只复核已有记录，不发起新的模型调用：
+python -m tests.live_stage_three --run-id <run-id>
+```
+
+全套检查为 51 项，真实 Web 模型样例及浏览器交互已验证，详细证据见阶段三验收。正常模型结束仍为 unverified；模型自检与计划 completed 不表示通用检查器已通过。真实 shell、进程树控制及完整失败恢复继续按阶段四、五推进。
+
+## 问答与轮数预算
+
+通用知识问答可直接回答，不要求先查工作目录。模型每轮会收到剩余轮数提示；`max_turns` 的最后一轮专用于最终答复，不执行工具，不增加预算外的请求。默认 8 轮因此包含最多 7 轮工具交互和 1 轮收尾；配置为 1 轮时只能直接回答。重试仍计入 `max_model_calls`，总时长与取消继续生效。
+
+页面显示轮数上限和可读停止原因。`turn_limit` 表示达到交互轮数上限且未收到有效最终答复，计划标记 completed 或记忆声称“已回答”不能替代答案；历史失败不会自动重跑或变为成功。修复记录见 [问答轮数耗尽修复](docs/TURN_LIMIT_FIX.md)。已启动的服务需重启后加载后端修改。

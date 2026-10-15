@@ -1,0 +1,43 @@
+{
+  "run_id": "ada2b6906ded452ca6d36b2d86dca093",
+  "model": "qwen3.8-flash",
+  "config": {
+    "provider": "openai_compatible",
+    "model": "qwen3.8-flash",
+    "base_url": "https://maas.qianwenaiapi.com/compatible-mode/v1",
+    "max_turns": 20,
+    "max_model_calls": 24,
+    "max_tool_calls_per_turn": 4,
+    "total_timeout_seconds": 360,
+    "request_timeout_seconds": 60,
+    "tool_timeout_seconds": 5,
+    "max_retries": 2,
+    "retry_base_seconds": 0.5,
+    "max_input_chars": 64000,
+    "max_output_chars": 8000,
+    "max_response_bytes": 262144,
+    "max_completion_tokens": 4096,
+    "completion_token_parameter": "max_tokens",
+    "runs_dir": "runs",
+    "max_file_bytes": 65536,
+    "max_rules_bytes": 16384,
+    "max_directory_entries": 200,
+    "recent_history_turns": 2,
+    "max_state_chars": 16000
+  },
+  "finished_at": "2026-10-15T03:31:41.010439+00:00",
+  "event_count": 106,
+  "checks": {
+    "normal_unverified_terminal": true,
+    "file_matches_sample_rules": true,
+    "event_sequence_exact": true,
+    "page_log_correspondence": true,
+    "snapshot_matches_disk": true,
+    "artifact_evidence_matches_file": true,
+    "refresh_no_execution": true,
+    "plan_completed": true
+  },
+  "passed": true,
+  "workspace": "D:\\My_workspace\\harness\\runs\\stage-three-workspace-6c00934007c447fcbee8dc0051558ae3",
+  "run_directory": "D:\\My_workspace\\harness\\runs\\ada2b6906ded452ca6d36b2d86dca093"
+}

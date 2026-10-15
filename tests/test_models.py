@@ -47,6 +47,16 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(caught.exception.retryable, retryable)
             self.assertEqual(str(caught.exception), f"model_http_{status}")
 
+    async def test_tool_free_request_omits_tools_and_tool_choice(self):
+        async def handler(request):
+            payload = json.loads(request.content)
+            self.assertNotIn("tools", payload)
+            self.assertNotIn("tool_choice", payload)
+            return httpx.Response(200, json=response("final answer"))
+        model = OpenAICompatibleModel(self.config, "test-key", httpx.MockTransport(handler))
+        self.assertEqual((await model.complete([{"role": "user", "content": "answer"}], [])).content,
+                         "final answer")
+
     async def test_transport_timeout_is_retryable(self):
         async def handler(request):
             raise httpx.ReadTimeout("potential secret", request=request)

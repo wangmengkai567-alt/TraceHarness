@@ -4,7 +4,7 @@
 
 日期：2026-10-14
 
-状态：用户已授权并启动阶段一实现；阶段一工程实现及本地检查已完成，真实模型验收等待用户配置。阶段二已授权并完成工程实现，验收记录见 docs/STAGE_TWO_ACCEPTANCE.md；阶段三至六尚未开始。
+状态：阶段一、二已交付；阶段三已授权并完成实现、工程检查与真实 Web 模型任务验收，详见 docs/STAGE_THREE_ACCEPTANCE.md；阶段四至六尚未开始。
 
 ## 1. 目标与范围
 
@@ -170,6 +170,10 @@
 
 下一迭代：先加入并验收沙箱，再讨论自主 shell。其他暂缓能力包括跨任务自动长期记忆、嵌套规范、断点续跑、通用 hooks、多 Agent、动态工具/MCP 平台、配置后台、多用户、远程部署、多模型路由与自动提交/部署。
 
+后续迭代另行规划自动历史摘要与上下文压缩：裁剪旧交互前提取摘要，以摘要替换历史并保留必要事实、来源及未解决事项。该功能不纳入当前阶段一至六；当前仍使用近期交互裁剪、任务内记忆及输入输出预算限制。
+
 阶段一交付与限制见 `README.md`、`docs/STAGE_ONE_DESIGN.md` 和 `docs/STAGE_ONE_ACCEPTANCE.md`。后续阶段不因阶段一实现而自动开始。
 
 阶段二交付与限制见 `docs/STAGE_TWO_DESIGN.md`、`docs/STAGE_TWO_ACCEPTANCE.md` 和 `examples/stage_two/`。
+
+阶段三交付与限制见 `docs/STAGE_THREE_DESIGN.md`、`docs/STAGE_THREE_ACCEPTANCE.md`；启动方式为 `python -m harness serve --env-file .env`。

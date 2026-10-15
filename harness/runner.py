@@ -37,7 +37,7 @@ class Runner:
         self.secrets = secrets
 
     async def run(self, task: str, workspace: Path,
-                  cancel: asyncio.Event | None = None) -> dict:
+                  cancel: asyncio.Event | None = None, *, store: RunStore | None = None) -> dict:
         if not isinstance(task, str) or not task.strip():
             raise ValueError("task must not be empty")
         workspace = workspace.resolve(strict=True)
@@ -45,7 +45,7 @@ class Runner:
             raise ValueError("workspace must be a directory")
         cancel = cancel if cancel is not None else asyncio.Event()
         config = self.config
-        store = RunStore(Path(config.runs_dir).resolve(), self.secrets)
+        store = store if store is not None else RunStore(Path(config.runs_dir).resolve(), self.secrets)
         started = time.monotonic()
         deadline = started + config.total_timeout_seconds
         turns = 0
@@ -61,6 +61,7 @@ class Runner:
             "workspace": str(workspace), "task": task[:config.max_input_chars],
             "task_truncated": len(task) > config.max_input_chars,
             "config": config.snapshot(), "mode": config.provider,
+            "final_response_policy": "reserve_last_turn",
         })
         store.emit("run_started", provider=config.provider)
 
@@ -121,9 +122,22 @@ class Runner:
                 check()
                 turns = turn
                 messages, dropped = context.assemble(history, config.recent_history_turns)
+                final_response_only = turn == config.max_turns
+                schemas = [] if final_response_only else run_tools.schemas()
+                messages.insert(1, {"role": "system", "content": (
+                    f"Run budget: model response {turn} of {config.max_turns}. "
+                    + ("This last response is reserved for your final answer. No tools are available. "
+                       "Answer now using existing knowledge and observations. State unfinished work and "
+                       "uncertainty honestly. Do not invent results or spend this response updating state."
+                       if final_response_only else
+                       "If you have enough information, answer now without more tools. "
+                       "The last response is reserved for a final answer, not tool execution.")
+                )})
+                if final_response_only:
+                    store.emit("final_response_requested", turn=turn, max_turns=config.max_turns)
                 if dropped:
                     store.emit("context_history_limited", omitted_turns=dropped)
-                request_size = len(json.dumps({"messages": messages, "tools": run_tools.schemas()},
+                request_size = len(json.dumps({"messages": messages, "tools": schemas},
                                              ensure_ascii=False))
                 if request_size > config.max_input_chars:
                     raise Halt(Status.BUDGET_EXCEEDED, "input_char_limit")
@@ -134,9 +148,10 @@ class Runner:
                         raise Halt(Status.BUDGET_EXCEEDED, "model_call_limit")
                     model_calls += 1
                     store.emit("model_requested", turn=turn, attempt=attempt + 1,
-                               model_call=model_calls, messages=messages)
+                               model_call=model_calls, messages=messages,
+                               final_response_only=final_response_only)
                     try:
-                        reply = await controlled(self.model.complete(messages, run_tools.schemas()),
+                        reply = await controlled(self.model.complete(messages, schemas),
                                                  config.request_timeout_seconds, "model_request_timeout")
                         break
                     except ModelError as error:
@@ -163,6 +178,10 @@ class Runner:
                     if type(value) is int and value >= 0:
                         usage[key] = usage.get(key, 0) + value
                 store.emit("model_responded", turn=turn, message=message, usage=reply.usage)
+                if final_response_only and reply.tool_calls:
+                    # Enforce the reserved response even for an adapter that ignores its tool list.
+                    store.emit("tool_dispatch_blocked", reason="final_response_only")
+                    raise Halt(Status.BUDGET_EXCEEDED, "turn_limit")
                 group = [message]
                 history.append(group)
                 if not reply.tool_calls:
