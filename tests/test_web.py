@@ -62,6 +62,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
                                  action("write_file", {"path": "summary.txt", "content": payload, "expected_hash": None}, 3),
                                  action("update_plan", plan("completed"), 4), ModelReply(content="done"))
         run_id = await self.start()
+        self.assertRegex(run_id, r"^[0-9]{8}001$")
         await self.finish()
         before = len(self.model.requests)
         first = await self.snapshot(run_id)
@@ -202,6 +203,23 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(next_page["has_more"])
         self.assertEqual((await self.client.get(f"/api/runs/{store.run_id}/events?after=-1")).status_code, 400)
         self.assertEqual(len(self.model.requests), 0)
+
+    async def test_legacy_uuid_history_and_new_ids_coexist(self):
+        legacy = "a" * 32
+        folder = self.manager.root / legacy
+        folder.mkdir()
+        (folder / "metadata.json").write_text(json.dumps({"run_id": legacy, "task": "old task"}),
+                                             encoding="utf-8", newline="\n")
+        (folder / "events.jsonl").write_text(json.dumps({"sequence": 1, "run_id": legacy,
+                                                      "type": "test", "data": {}}) + "\n",
+                                             encoding="utf-8", newline="\n")
+        new_id = await self.start()
+        await self.finish()
+        self.assertEqual((await self.snapshot(legacy))["metadata"]["task"], "old task")
+        page = (await self.client.get(f"/api/runs/{legacy}/events?after=0")).json()
+        self.assertEqual(page["events"][0]["run_id"], legacy)
+        history = (await self.client.get("/api/runs")).json()["runs"]
+        self.assertEqual({item["run_id"] for item in history}, {legacy, new_id})
 
     async def test_disconnect_does_not_cancel_and_shutdown_does(self):
         slow = SlowModel()

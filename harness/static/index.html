@@ -3,36 +3,55 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Harness · 本地任务</title>
+  <title>Harness Studio · 任务工作台</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
-  <header><div><span class="eyebrow">AI AGENT HARNESS / MVP</span><h1>本地任务工作台</h1></div><span class="badge">阶段三 · 本地单用户</span></header>
-  <main>
-    <aside>
-      <section><h2>新建任务</h2>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="Harness Studio 首页"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span><strong>Harness Studio</strong><small>构建、运行和管理你的 AI 任务</small></span></a>
+    <div class="header-meta"><span class="local-indicator"></span>本地工作台<span class="header-divider"></span><span class="avatar" aria-hidden="true">H</span><span>单用户模式</span></div>
+  </header>
+  <main class="studio">
+    <aside class="configuration-column">
+      <section class="card config-card">
+        <div class="card-heading"><span class="icon-box" aria-hidden="true">↗</span><div><h1>任务配置</h1><p>定义目标，开始一次智能体运行</p></div></div>
         <form id="task-form">
           <label for="workspace">工作目录</label><input id="workspace" required placeholder="已有目录的绝对路径" autocomplete="off">
-          <label for="task">任务要求</label><textarea id="task" rows="7" required placeholder="描述目标、产物及完成条件"></textarea>
-          <button id="start" type="submit">开始模型任务</button>
-          <button id="demo" type="button" class="secondary">模拟审批演练</button>
+          <label for="task">任务要求 <span class="required">*</span></label><textarea id="task" rows="7" required placeholder="希望 Agent 帮你完成什么？&#10;&#10;描述目标、相关材料和期望的结果…"></textarea><div id="task-count" class="field-counter">0 字</div>
+          <div class="config-label">运行方式</div><div class="config-value"><span aria-hidden="true">◇</span> 本地单体 · 单任务运行</div>
+          <details class="advanced-options"><summary>配置与运行说明</summary><p>模型及预算使用服务启动配置。文件访问限制在工作目录；关闭页面不会取消运行。</p><p>审批演练不调用模型，不执行真实命令。</p></details>
+          <button id="start" type="submit" class="primary full"><span aria-hidden="true">▶</span>开始运行任务</button>
+          <button id="demo" type="button" class="quiet full">模拟审批演练</button>
         </form>
-        <p class="muted">一次运行一个任务。模型配置来自服务启动时的配置文件或环境变量。</p>
       </section>
-      <section><label for="history">查看运行记录</label><select id="history"><option value="">请选择运行</option></select><p class="muted">刷新恢复轨迹；关闭页面不会取消任务。模拟演练不调用模型或执行命令。</p></section>
+      <section class="card recent-card"><div class="section-heading"><h2><span class="heading-icon" aria-hidden="true">◷</span>最近任务</h2><span id="history-count" class="muted">0 项</span></div><label for="history" class="sr-only">查看运行记录</label><select id="history"><option value="">请选择运行</option></select><div id="recent-runs" class="recent-list"><p class="empty-note">任务开始后会保存在这里</p></div></section>
     </aside>
-    <div class="content">
-      <div id="error" role="alert" hidden></div>
-      <section><div class="section-title"><h2>运行概览</h2><button id="cancel" class="danger" disabled>取消运行</button></div>
-        <p id="status" role="status" aria-live="polite">尚未选择运行</p><p id="run-meta" class="muted"></p><p id="run-limits" class="muted"></p>
-        <details><summary>任务与配置快照</summary><pre id="metadata">暂无记录</pre></details>
-      </section>
-      <section id="approval-section" hidden><h2>待审批 · 模拟调用</h2><pre id="approval"></pre><div class="actions"><button id="approve">批准模拟操作</button><button id="reject" class="secondary">拒绝</button></div><p class="muted">批准仅记录模拟完成，不执行真实 shell。决定只对本次运行、本次审批有效。</p></section>
-      <section><h2>执行计划</h2><ol id="plan"><li class="muted">尚无计划</li></ol><details><summary>任务内记忆</summary><pre id="memory">暂无记录</pre></details></section>
-      <section><h2>项目规范</h2><p id="rules-version" class="muted">尚未加载</p><details><summary>查看本次规则快照</summary><pre id="rules">暂无记录</pre></details></section>
-      <section><h2>结果与产物</h2><p id="verification" class="muted">尚无检查结果</p><pre id="answer">等待结果</pre><h3>文件写入记录</h3><ul id="artifacts"><li class="muted">暂无产物</li></ul><p class="muted">产物清单来自成功的写入事件；文件之后可能被外部修改。模型报告的检查依据见下方轨迹。</p></section>
-      <section><div class="section-title"><h2>执行轨迹</h2><span id="event-count" class="muted">0 条事件</span></div><p class="muted">按事件序号展示。展开查看参数、反馈、错误与重试；长详情明确截断。轨迹中的文本不会作为 HTML 执行。</p><div id="events"></div></section>
+    <div class="workspace-column">
+      <div id="error" class="error-banner" role="alert" hidden></div>
+      <section class="card result-header"><div class="card-heading"><span class="icon-box" aria-hidden="true">▤</span><div><h2>任务结果</h2><p id="result-subtitle">从一个目标开始，让每次执行都有迹可循</p></div></div><div class="result-header-actions"><div class="run-indicator"><span id="status-symbol" class="status-symbol">○</span><div><p id="status" role="status" aria-live="polite">准备就绪</p><p id="result-duration" class="muted">等待开始新的任务</p></div></div><button id="cancel" class="danger" disabled>取消运行</button></div></section>
+      <div class="workspace-body">
+        <section class="card result-card">
+          <div class="tabs" role="tablist" aria-label="任务结果视图">
+            <button id="tab-answer" type="button" role="tab" aria-selected="true" aria-controls="panel-answer" data-tab="answer">▤ <span>回答内容</span></button>
+            <button id="tab-files" type="button" role="tab" aria-selected="false" aria-controls="panel-files" data-tab="files" tabindex="-1">▱ <span>生成文件</span> <span id="file-count">0</span></button>
+            <button id="tab-trace" type="button" role="tab" aria-selected="false" aria-controls="panel-trace" data-tab="trace" tabindex="-1">⌁ <span>执行轨迹</span></button>
+            <button id="tab-tools" type="button" role="tab" aria-selected="false" aria-controls="panel-tools" data-tab="tools" tabindex="-1">⚒ <span>工具调用</span></button>
+            <button id="tab-context" type="button" role="tab" aria-selected="false" aria-controls="panel-context" data-tab="context" tabindex="-1"><span>项目上下文</span></button>
+          </div>
+          <div id="panel-answer" class="tab-panel answer-panel" role="tabpanel" aria-labelledby="tab-answer"><div class="answer-toolbar"><span id="answer-label" class="eyebrow">运行结果</span><button id="copy-answer" class="outline compact" type="button" disabled>▢ 复制</button></div><article id="answer" class="answer-content"><div class="answer-empty"><span class="empty-orbit" aria-hidden="true">⌁</span><h2>让想法成为结果</h2><p>在左侧描述你的任务。运行后，<br>回答、产物与执行过程会在这里呈现。</p></div></article><div class="verification-note"><span aria-hidden="true">◇</span><p id="verification">回答与模型自检会如实记录；未配置通用结果验证器。</p></div></div>
+          <div id="panel-files" class="tab-panel" role="tabpanel" aria-labelledby="tab-files" hidden><div class="panel-intro"><h2>生成文件</h2><p>成功写入的文件及当时的哈希证据。</p></div><ul id="artifacts" class="artifact-list"><li class="empty-note">暂无产物</li></ul><p class="muted">文件之后可能被外部修改，以工作目录中的实际内容为准。</p></div>
+          <div id="panel-trace" class="tab-panel" role="tabpanel" aria-labelledby="tab-trace" hidden><div class="panel-intro"><h2>执行轨迹 <span id="event-count" class="count-label">0 条事件</span></h2><p>按序号记录完整过程，展开查看参数与反馈。</p></div><p class="bounded-note">页面最多保留最近 300 条详情，完整事件保存在本地日志。</p><div id="events" class="event-details"></div></div>
+          <div id="panel-tools" class="tab-panel" role="tabpanel" aria-labelledby="tab-tools" hidden><div class="panel-intro"><h2>工具调用</h2><p>查看工具参数、返回结果和执行错误。</p></div><div id="tool-events" class="event-details"></div><p id="tools-empty" class="empty-note">本次运行尚无工具调用</p></div>
+          <div id="panel-context" class="tab-panel" role="tabpanel" aria-labelledby="tab-context" hidden><div class="panel-intro"><h2>项目上下文</h2><p>本次使用的规范快照、任务记忆与运行配置。</p></div><details class="context-details" open><summary>项目规范 · AGENTS.md</summary><p id="rules-version" class="muted">尚未加载</p><pre id="rules">暂无记录</pre></details><details class="context-details"><summary>任务内记忆</summary><pre id="memory">暂无记录</pre></details><details class="context-details"><summary>任务与配置快照</summary><pre id="metadata">暂无记录</pre><p id="run-limits" class="muted"></p></details></div>
+        </section>
+        <aside class="inspector-column">
+          <section class="card overview-card"><div class="section-heading"><h2>运行概览</h2><span id="overview-badge" class="status-badge" data-status="idle">待运行</span></div><dl class="overview-list"><div><dt>开始时间</dt><dd id="started-at">—</dd></div><div><dt>结束时间</dt><dd id="finished-at">—</dd></div><div><dt>总耗时</dt><dd id="elapsed">—</dd></div><div><dt>交互轮数</dt><dd id="turn-progress">—</dd></div><div><dt>工作目录</dt><dd id="overview-workspace">—</dd></div><div><dt>使用模型</dt><dd id="overview-model">—</dd></div><div><dt>任务 ID</dt><dd id="run-meta">—</dd></div></dl></section>
+          <section id="approval-section" class="card approval-card" hidden><div class="section-heading"><h2>模拟调用待审批</h2></div><pre id="approval"></pre><div class="actions"><button id="approve" class="primary">批准模拟操作</button><button id="reject" class="outline">拒绝</button></div><p class="muted">批准仅记录模拟完成，不执行真实 shell。</p></section>
+          <section class="card plan-card"><div class="section-heading"><h2>执行计划</h2><span id="plan-progress" class="muted">等待规划</span></div><progress id="plan-progress-bar" class="progress-track" value="0" max="100" aria-label="计划完成比例"></progress><ol id="plan" class="plan-list"><li class="empty-note">尚无计划，简单问答可直接回答</li></ol></section>
+          <section class="card logs-card"><div class="section-heading"><h2><span class="heading-icon" aria-hidden="true">⌁</span>运行日志</h2><button id="clear-logs" class="outline compact" type="button" title="仅清空当前窗口显示，不删除运行记录">清空显示</button></div><div class="console-toolbar"><span><i class="console-dot"></i>事件控制台</span><label class="follow-control"><input id="follow-logs" type="checkbox" checked>跟随最新</label></div><div id="logs" class="log-console" role="region" aria-label="运行日志窗口" tabindex="0"><p id="logs-empty" class="console-empty">等待任务事件…</p></div><div class="console-footer"><span id="log-count">0 条日志</span><button id="open-trace" class="text-button" type="button">查看详情 ↗</button></div></section>
+        </aside>
+      </div>
     </div>
   </main>
 </body>

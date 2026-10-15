@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import json
 import os
-import re
 import signal
 import sys
 from pathlib import Path
@@ -12,6 +11,7 @@ from pathlib import Path
 from .config import load_config
 from .models import OpenAICompatibleModel
 from .runner import LIVE_CHECK_TASK, Runner
+from .store import RUN_ID
 
 
 def print_json(value) -> None:
@@ -95,8 +95,8 @@ def main(argv: list[str] | None = None) -> int:
             asyncio.run(serve(load_config(args.config, args.env_file), args.port))
             return 0
         if args.command == "inspect":
-            if not re.fullmatch(r"[0-9a-f]{32}", args.run_id):
-                raise ValueError("run_id must be the 32-character ID produced by harness")
+            if not RUN_ID.fullmatch(args.run_id):
+                raise ValueError("run_id must be a date + daily sequence ID or a legacy UUID")
             folder = args.runs_dir.resolve() / args.run_id
             result = folder / "result.json"
             if result.is_file():

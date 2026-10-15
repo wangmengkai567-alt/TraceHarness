@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
+
+RUN_ID_PATTERN = r"(?:[0-9]{8}[0-9]{3,}|[0-9a-f]{32})"
+RUN_ID = re.compile(RUN_ID_PATTERN)
 
 
 def utc_now() -> str:
@@ -15,9 +18,20 @@ class RunStore:
     """One writer per run. Events are flushed before the next action."""
 
     def __init__(self, root: Path, secrets: tuple[str, ...] = ()):
-        self.run_id = uuid4().hex
-        self.directory = root / self.run_id
-        self.directory.mkdir(parents=True, exist_ok=False)
+        root.mkdir(parents=True, exist_ok=True)
+        day = datetime.now().strftime("%Y%m%d")
+        daily_id = re.compile(day + r"([0-9]{3,})")
+        sequence = max((int(match[1]) for entry in root.iterdir()
+                        if (match := daily_id.fullmatch(entry.name))), default=0) + 1
+        while True:
+            self.run_id = f"{day}{sequence:03d}"
+            self.directory = root / self.run_id
+            try:
+                # Atomic reservation also prevents duplicate IDs across CLI/Web processes.
+                self.directory.mkdir(exist_ok=False)
+                break
+            except FileExistsError:
+                sequence += 1
         self.sequence = 0
         self.secrets = tuple(value for value in secrets if value)
 

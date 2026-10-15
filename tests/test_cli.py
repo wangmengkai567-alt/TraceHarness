@@ -48,6 +48,19 @@ class CLITests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)["status"], "no_terminal_result")
         self.assertEqual(self.command("inspect", "../escape").returncode, 2)
 
+    def test_inspect_date_sequence_id_and_events(self):
+        run_id = "20261015001"
+        folder = self.folder / "runs" / run_id
+        folder.mkdir(parents=True)
+        payload = {"run_id": run_id, "status": "unverified", "answer": "done"}
+        (folder / "result.json").write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+        event = json.dumps({"run_id": run_id, "sequence": 1})
+        (folder / "events.jsonl").write_text(event + "\n", encoding="utf-8", newline="\n")
+        result = self.command("inspect", run_id, "--events")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn(run_id, result.stdout)
+        self.assertTrue(result.stdout.rstrip().endswith(event))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,8 +18,8 @@ class Config:
     max_turns: int = 8
     max_model_calls: int = 16
     max_tool_calls_per_turn: int = 4
-    total_timeout_seconds: float = 120
-    request_timeout_seconds: float = 30
+    total_timeout_seconds: float = 360
+    request_timeout_seconds: float = 90
     tool_timeout_seconds: float = 5
     max_retries: int = 2
     retry_base_seconds: float = 0.5

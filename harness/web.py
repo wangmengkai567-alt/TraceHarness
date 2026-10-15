@@ -18,10 +18,9 @@ from fastapi.responses import JSONResponse, Response
 from .config import Config
 from .models import OpenAICompatibleModel
 from .runner import Runner
-from .store import RunStore, utc_now
+from .store import RUN_ID, RUN_ID_PATTERN, RunStore, utc_now
 
 STATIC = Path(__file__).with_name("static")
-RUN_ID = re.compile(r"[0-9a-f]{32}")
 MAX_BODY = 131072
 PAGE_SIZE = 50
 DETAIL_LIMIT = 24000
@@ -272,7 +271,7 @@ class RunManager:
             return {"runs": runs}
         if method == "POST" and path == "/api/runs":
             return await self.start(body)
-        match = re.fullmatch(r"/api/runs/([0-9a-f]{32})(?:/(.*))?", path)
+        match = re.fullmatch(rf"/api/runs/({RUN_ID_PATTERN})(?:/(.*))?", path)
         if not match:
             raise APIError(404, "not_found")
         run_id, action = match.groups()
