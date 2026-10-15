@@ -1,0 +1,6 @@
+# Keep cross-platform text files as LF in the index and working tree.
+* text=auto eol=lf
+
+# Windows batch scripts require CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
