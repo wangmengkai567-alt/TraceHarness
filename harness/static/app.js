@@ -4,6 +4,7 @@ const MAX_VISIBLE_EVENTS = 300;
 let token = "", selected = "", cursor = 0, epoch = 0, loading = false, posting = false;
 let snapshot = null, runs = [], nextHistory = 0, activeTab = "answer";
 let lastNetworkKey = "";
+let lastRulesContent = null;
 let displayedLogs = 0, observedTurn = 0, lastAnswerKey = "", lastPlanKey = "", lastHistoryKey = "", prefilledRun = "", formDirty = false;
 const seen = new Set();
 const statuses = {running: "运行中", verifying: "正在检查", awaiting_approval: "等待审批", cancelling: "正在取消", cancelled: "已取消", completed: "指定检查通过", verification_failed: "检查失败", unverified: "已结束 · 未验证", failed: "执行失败", budget_exceeded: "预算耗尽", interrupted: "运行已中断"};
@@ -108,14 +109,14 @@ function renderSources(network, citations) {
   }
   if (citations?.unknown?.length) target.append(node("p", "", "回答包含未知来源编号：" + citations.unknown.join("、")));
 }
-function renderAnswer(value) {
-  const target = $("answer");
+function renderMarkdown(target, value, className = "answer-content") {
+  value = String(value ?? "");
   target.replaceChildren();
   const tick = String.fromCharCode(96), fence = tick.repeat(3);
   if (!/(^#{1,6} |^\s*[-*]\s|^\s*\d+\.\s|\*\*|^\||\[[^\]]+\]\(https?:\/\/)/m.test(value) && !value.includes(tick)) {
-    target.textContent = value; target.className = "answer-content plain-line"; return;
+    target.textContent = value; target.className = className + " plain-line"; return;
   }
-  target.className = "answer-content";
+  target.className = className;
   const lines = value.replace(/\r\n/g, "\n").split("\n");
   let index = 0;
   while (index < lines.length) {
@@ -160,6 +161,9 @@ function renderAnswer(value) {
     }
     const p = node("p", "plain-line"); inlineContent(p, line); target.append(p); index++;
   }
+}
+function renderAnswer(value) {
+  renderMarkdown($("answer"), value);
 }
 function emptyAnswer(title, description) {
   $("answer").replaceChildren();
@@ -210,7 +214,12 @@ function render(value) {
   text("memory", pretty(value.state?.memory || {}));
   const rules = value.rules;
   text("rules-version", rules ? (rules.present ? "版本 SHA256 " + rules.sha256 : "根目录无 AGENTS.md") : "本次尚未加载规范");
-  text("rules", rules ? rules.content : "暂无记录");
+  const rulesContent = rules ? rules.content || "暂无规范内容" : "暂无记录";
+  if (rulesContent !== lastRulesContent) {
+    renderMarkdown($("rules"), rulesContent, "answer-content context-markdown");
+    text("rules-raw", rules ? rules.content : "暂无记录");
+    lastRulesContent = rulesContent;
+  }
   const answer = result ? (result.answer || reasons[result.reason] || "运行结束：" + result.reason) : null;
   const answerKey = value.run_id + value.status + (answer || "");
   if (answerKey !== lastAnswerKey) {
@@ -251,7 +260,7 @@ function render(value) {
 function eventHint(event) {
   const data = event.data;
   let hint = data.name || data.reason || data.code || data.decision || "";
-  if (event.type === "model_responded") hint = data.message?.content || "工具调用响应";
+  if (event.type === "model_responded") hint = data.message?.content?.trim().split(/\r?\n/)[0] || "工具调用响应";
   if (event.type === "tool_requested") {
     try { const args = JSON.parse(data.arguments); hint += " · " + (args.path || args.query || args.url || args.document_id || ""); } catch {}
   }
@@ -265,9 +274,29 @@ function eventHint(event) {
 }
 function eventDetails(event) {
   const details = node("details"); details.dataset.sequence = String(event.sequence);
-  const summary = node("summary", "", "#" + event.sequence + " " + (eventNames[event.type] || event.type) + " · " + eventHint(event));
+  const summary = node("summary");
+  const hint = eventHint(event).replace(/^\s{0,3}#{1,6}\s+/gm, "");
+  summary.append(node("span", "event-sequence", String(event.sequence)),
+    node("span", "event-title", (eventNames[event.type] || event.type) + (hint ? " · " + hint : "")));
+  details.append(summary);
+  const data = event.data;
+  let content = data.content || data.message?.content || data.result?.data?.content || data.answer;
+  if (event.type === "tool_requested" && data.name === "write_file") {
+    try { content = JSON.parse(data.arguments).content; } catch {}
+  }
+  if (typeof content === "string" && content.trim()) {
+    const preview = node("div");
+    renderMarkdown(preview, content.slice(0, 24000), "answer-content context-markdown event-content");
+    details.append(preview);
+    if (content.length > 24000) details.append(node("p", "muted", "正文预览已截断，完整内容见本地事件日志。"));
+  }
   const raw = pretty(event.data);
-  details.append(summary, node("pre", "", raw.length > 24000 ? raw.slice(0, 24000) + "\n[页面详情已截断，完整内容见本地事件日志]" : raw));
+  const rawContent = node("pre", "", raw.length > 24000 ? raw.slice(0, 24000) + "\n[页面详情已截断，完整内容见本地事件日志]" : raw);
+  if (typeof content === "string" && content.trim()) {
+    const original = node("details", "raw-details");
+    original.append(node("summary", "", "原始事件数据"), rawContent);
+    details.append(original);
+  } else details.append(rawContent);
   return details;
 }
 function appendBounded(container, child) {
@@ -362,6 +391,7 @@ async function poll() {
 function select(run) {
   epoch++; selected = run; cursor = 0; snapshot = null; seen.clear();
   observedTurn = 0; displayedLogs = 0; lastAnswerKey = ""; lastPlanKey = "";
+  lastRulesContent = null;
   $("events").replaceChildren(); $("tool-events").replaceChildren(); $("tools-empty").hidden = false;
   $("logs").replaceChildren(node("p", "console-empty", "等待任务事件…"));
   text("event-count", "0 条事件"); text("log-count", "0 条日志");
@@ -373,7 +403,7 @@ function select(run) {
   text("plan-progress", "等待规划"); $("plan-progress-bar").value = 0;
   $("plan").replaceChildren(node("li", "empty-note", "尚无计划，简单问答可直接回答"));
   $("artifacts").replaceChildren(node("li", "empty-note", "暂无产物")); text("file-count", "0");
-  text("rules-version", "尚未加载"); text("rules", "暂无记录"); text("memory", "{}"); text("metadata", "暂无记录"); text("run-limits", "");
+  text("rules-version", "尚未加载"); renderMarkdown($("rules"), "暂无记录", "answer-content context-markdown"); text("rules-raw", "暂无记录"); text("memory", "{}"); text("metadata", "暂无记录"); text("run-limits", "");
   $("approval-section").hidden = true;
   $("completion-report").replaceChildren();
   emptyAnswer(run ? "正在读取运行记录" : "让想法成为结果", run ? "正在恢复本次回答与执行轨迹。" : "在左侧描述你的任务，回答、产物与执行过程会在这里呈现。");

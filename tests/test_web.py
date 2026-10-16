@@ -204,6 +204,35 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(f"/api/runs/{store.run_id}/events?after=-1")).status_code, 400)
         self.assertEqual(len(self.model.requests), 0)
 
+    async def test_large_model_request_keeps_turn_metadata_and_saved_details(self):
+        store = RunStore(self.manager.root)
+        store.write_json("metadata.json", {"task": "long context", "workspace": str(self.workspace)})
+        messages = [{"role": "user", "content": "x" * (DETAIL_LIMIT + 1)}]
+        store.emit("model_requested", turn=3, attempt=2, model_call=4,
+                   final_response_only=False, messages=messages)
+        store.emit("model_requested", turn=8, attempt=1, model_call=9,
+                   final_response_only=True, messages=messages)
+        saved = self.events(store.run_id)
+        url = f"/api/runs/{store.run_id}/events?after=0"
+        for _ in range(2):
+            response = await self.client.get(url)
+            self.assertEqual(response.status_code, 200)
+            page = response.json()
+            self.assertEqual(page["cursor"], 2)
+            for event, original in zip(page["events"], saved):
+                data = event["data"]
+                self.assertTrue(data["display_truncated"])
+                for key in ("turn", "attempt", "model_call", "final_response_only"):
+                    self.assertEqual(data[key], original["data"][key])
+                self.assertNotIn("messages", data)
+                self.assertEqual(len(data["preview"]), DETAIL_LIMIT)
+                self.assertLess(len(json.dumps(data, ensure_ascii=False)), DETAIL_LIMIT + 256)
+        self.assertEqual(self.events(store.run_id), saved)
+        self.assertEqual(saved[0]["data"]["messages"], messages)
+        self.assertEqual(len(self.model.requests), 0)
+        tail = (await self.client.get(f"/api/runs/{store.run_id}/events?after=2")).json()
+        self.assertEqual(tail["events"], [])
+
     async def test_legacy_uuid_history_and_new_ids_coexist(self):
         legacy = "a" * 32
         folder = self.manager.root / legacy

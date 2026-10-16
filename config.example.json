@@ -28,7 +28,7 @@
   "max_consecutive_failures": 3,
   "max_verification_attempts": 2,
   "checks": [],
-  "network_enabled": false,
+  "network_enabled": true,
   "search_timeout_seconds": 30,
   "extract_timeout_seconds": 45,
   "max_search_requests": 5,

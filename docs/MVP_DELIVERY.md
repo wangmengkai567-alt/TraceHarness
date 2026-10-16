@@ -2,7 +2,7 @@
 
 交付日期：2026-10-16。阶段一至六完成；本地单用户、单任务、Python/FastAPI 单体、源码运行。完整证据见 [阶段六验收](STAGE_SIX_ACCEPTANCE.md)。
 
-阶段七扩展已接入 Tavily 搜索与网页正文读取，默认关闭。启用需在 `.env` 填写 `TAVILY_API_KEY`，并在启动使用的 JSON 中设置 `network_enabled=true` 后重启；搜索词和待读网址会发送给 Tavily。工具、长文续读、请求预算与复现方法见 [README 阶段七说明](../README.md#阶段七联网搜索与网页正文读取)，证据见 [阶段七验收](STAGE_SEVEN_ACCEPTANCE.md)。
+阶段七扩展已接入 Tavily 搜索与网页正文读取，默认关闭。启用需在 `.env` 填写 `TAVILY_API_KEY`，并在启动使用的 JSON 中设置 `network_enabled=true` 后重启；搜索词和待读网址会发送给 Tavily。启用方法见 [README 联网说明](../README.md#联网搜索与网页读取)，工具契约与请求预算见 [联网设计](STAGE_SEVEN_DESIGN.md)，复现与证据见 [阶段七验收](STAGE_SEVEN_ACCEPTANCE.md)。
 
 ## 从源码启动
 

@@ -75,6 +75,39 @@ assert(descendants(element("answer")).some((el) => el.tagName === "strong"));
 assert(descendants(element("answer")).some((el) => el.tagName === "code"));
 assert(!descendants(element("answer")).some((el) => ["script", "img"].includes(el.tagName)));
 assert.match(element("answer").textContent, /<script>bad\(\)<\/script>/);
+const rulesMarkdown = "# 项目协作约定\n\n## 架构\n\n- Python 后端\n- **保留规范**\n\n<script>bad()</script>";
+value.rules = {present: true, sha256: "original-rules-hash", content: rulesMarkdown};
+context.render(value);
+assert(descendants(element("rules")).some((el) => el.tagName === "h1" && el.textContent === "项目协作约定"));
+assert(descendants(element("rules")).some((el) => el.tagName === "h2" && el.textContent === "架构"));
+assert(descendants(element("rules")).some((el) => el.tagName === "ul"));
+assert(!descendants(element("rules")).some((el) => el.tagName === "script"));
+assert.doesNotMatch(element("rules").textContent, /#{1,6} /);
+assert.equal(element("rules-raw").textContent, rulesMarkdown);
+assert.equal(value.rules.content, rulesMarkdown);
+assert.match(element("rules-version").textContent, /original-rules-hash/);
+const renderedRules = element("rules").children[0];
+context.render(value);
+assert.equal(element("rules").children[0], renderedRules, "polling must preserve unchanged rules rendering");
+for (const event of [
+  {sequence: 7, type: "rules_loaded", data: {content: rulesMarkdown}},
+  {sequence: 8, type: "model_responded", data: {message: {content: "## 模型说明\n\n- 已读取资料"}}},
+  {sequence: 9, type: "tool_responded", data: {name: "read_webpage", result: {ok: true, data: {content: "# 网页标题\n\n正文"}}}},
+  {sequence: 10, type: "tool_requested", data: {name: "write_file", arguments: JSON.stringify({content: "# 摘要\n\n内容"})}},
+]) {
+  const details = context.eventDetails(event);
+  assert.equal(details.children[0].children[0].textContent, String(event.sequence));
+  assert.equal(details.children[0].children[0].className, "event-sequence");
+  assert.doesNotMatch(details.children[0].textContent, /#/);
+  assert(descendants(details.children[1]).some((el) => /^h[1-3]$/.test(el.tagName)));
+  assert.equal(details.children[2].children[0].textContent, "原始事件数据");
+  assert(!descendants(details).some((el) => el.tagName === "script"));
+}
+const codePreview = new Element();
+context.renderMarkdown(codePreview, "# 标题\n\n```python\n# 保留代码注释\n```", "answer-content context-markdown");
+assert.equal(descendants(codePreview).find((el) => el.tagName === "code").textContent, "# 保留代码注释");
+const emptyEvent = context.eventDetails({sequence: 11, type: "run_started", data: {}});
+assert.equal(emptyEvent.children[0].textContent, "11运行开始");
 element("follow-logs").checked = true;
 element("logs").scrollHeight = 1234;
 for (let sequence = 2; sequence <= 501; sequence++) {
@@ -94,8 +127,17 @@ element("follow-logs").checked = false;
 element("logs").scrollTop = 50;
 context.appendEvent({sequence: 502, type: "model_requested", data: {turn: 2}});
 assert.equal(element("logs").children.length, 1);
+assert.match(element("logs").textContent, /请求模型 · 第 2 轮交互/);
 assert.equal(element("logs").scrollTop, 50);
 assert.equal(element("event-count").textContent, "502 条事件");
+context.appendEvent({sequence: 503, type: "model_requested", data: {
+  turn: 3, attempt: 2, model_call: 4, final_response_only: false,
+  display_truncated: true, preview: "long request details",
+}});
+assert.match(element("logs").textContent, /请求模型 · 第 3 轮交互/);
+assert.doesNotMatch(element("logs").textContent, /第 — 轮交互/);
+context.render({...value, status: "running", result: null});
+assert.equal(element("turn-progress").textContent, "3 / 8");
 element("logs").listeners.get("keydown")({key: "Home", preventDefault() {}});
 assert.equal(element("logs").scrollTop, 0);
 assert.equal(element("follow-logs").checked, false);

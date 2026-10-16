@@ -158,8 +158,19 @@ textarea { min-height: 156px; max-height: 300px; resize: vertical; line-height: 
 .panel-intro h2 { font-size: 18px; margin: 0 0 9px; }
 .panel-intro p, .bounded-note { color: #8a99ad; font-size: 11px; line-height: 1.8; margin: 0 0 18px; }
 .count-label { font-size: 10px; font-weight: 400; color: #8392a8; margin-left: 8px; }
-.event-details details { margin-bottom: 8px; border: 1px solid #e7eef0; border-radius: 7px; padding: 12px; background: #fcfefd; }
+.event-details > details { margin-bottom: 8px; border: 1px solid #e7eef0; border-radius: 7px; padding: 12px; background: #fcfefd; }
 .event-details summary { font-size: 11px; color: #53697c; line-height: 1.8; overflow-wrap: anywhere; cursor: pointer; }
+.event-sequence { display: inline-block; min-width: 24px; padding: 1px 6px; margin-right: 8px; border-radius: 5px; background: #edf5f2; color: #43806c; font: 10px/1.8 Consolas, monospace; text-align: center; vertical-align: baseline; }
+.context-markdown { font-size: 12px; line-height: 1.85; padding: 15px 0; }
+.context-markdown h1, .context-markdown > h2:first-child { font-size: 18px; letter-spacing: 0; margin: 0 0 14px; }
+.context-markdown h2 { font-size: 15px; margin: 20px 0 10px; }
+.context-markdown h3 { font-size: 13px; margin: 16px 0 8px; }
+.context-markdown p { margin-bottom: 10px; }
+.context-markdown li { margin: 5px 0; }
+.context-markdown > :last-child { margin-bottom: 0; }
+.event-content { margin-top: 12px; border-top: 1px solid var(--line); }
+.raw-details { margin-top: 10px; }
+.raw-details > summary { color: #8392a8; font-size: 11px; cursor: pointer; }
 pre { background: #f2f6f7; color: #52687c; font: 11px/1.8 Consolas, "Microsoft YaHei", monospace; padding: 13px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
 .context-details { border-top: 1px solid var(--line); margin-top: 19px; padding-top: 17px; }
 .context-details summary { cursor: pointer; font-size: 13px; font-weight: 500; }

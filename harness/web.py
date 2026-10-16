@@ -253,7 +253,11 @@ class RunManager:
                         break
                     wire = json.dumps(event["data"], ensure_ascii=False)
                     if len(wire) > DETAIL_LIMIT:
-                        event["data"] = {"preview": wire[:DETAIL_LIMIT], "display_truncated": True}
+                        # Keep request progress visible even when the message history is clipped.
+                        progress = {key: event["data"][key]
+                                    for key in ("turn", "attempt", "model_call", "final_response_only")
+                                    if key in event["data"]}
+                        event["data"] = {**progress, "preview": wire[:DETAIL_LIMIT], "display_truncated": True}
                     events.append(event)
         except FileNotFoundError:
             pass
