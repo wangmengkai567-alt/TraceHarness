@@ -8,7 +8,7 @@ const seen = new Set();
 const statuses = {running: "运行中", awaiting_approval: "等待审批", cancelling: "正在取消", cancelled: "已取消", unverified: "已结束 · 未验证", failed: "执行失败", budget_exceeded: "预算耗尽", interrupted: "运行已中断"};
 const activeStatuses = new Set(["running", "awaiting_approval", "cancelling"]);
 const reasons = {turn_limit: "已达到模型交互轮数上限，未收到有效的最终答复。请查看执行轨迹；需要继续时可调整 max_turns 后发起新任务。", model_call_limit: "已达到模型请求次数上限（包含重试），未收到最终答复。", total_timeout: "已达到本次运行的总时长上限。", input_char_limit: "模型输入超过上下文字符预算。", model_request_timeout: "模型请求超时，有限重试后仍未成功。"};
-const eventNames = {run_started: "运行开始", rules_loaded: "规范已加载", plan_updated: "计划变更", memory_updated: "记忆更新", model_requested: "请求模型", model_responded: "模型回复", tool_requested: "调用工具", tool_responded: "工具反馈", model_error: "模型错误", model_retry_scheduled: "请求重试", context_history_limited: "历史裁剪", final_response_requested: "请求最终答复", tool_dispatch_blocked: "已阻止工具调用", cancel_requested: "请求取消", approval_requested: "等待模拟审批", approval_decided: "审批决定", approval_cancelled: "审批已取消", approval_expired: "审批已过期", simulated_action_completed: "模拟操作完成", run_finished: "运行结束"};
+const eventNames = {run_started: "运行开始", rules_loaded: "规范已加载", plan_updated: "计划变更", memory_updated: "记忆更新", model_requested: "请求模型", model_responded: "模型回复", tool_requested: "调用工具", tool_responded: "工具反馈", model_error: "模型错误", model_retry_scheduled: "请求重试", context_history_limited: "历史裁剪", final_response_requested: "请求最终答复", tool_dispatch_blocked: "已阻止工具调用", cancel_requested: "请求取消", approval_requested: "等待审批", approval_decided: "审批决定", approval_cancelled: "审批已取消", approval_expired: "审批已过期", simulated_action_completed: "模拟操作完成", run_finished: "运行结束"};
 function text(id, value) { if ($(id).textContent !== String(value ?? "")) $(id).textContent = value ?? ""; }
 function pretty(value) { return JSON.stringify(value, null, 2); }
 function node(tag, className, content) {
@@ -191,6 +191,7 @@ function render(value) {
   text("file-count", value.artifacts.length);
   $("approval-section").hidden = !value.approval;
   text("approval", value.approval ? pretty(value.approval) : "");
+  text("approve", value.approval?.type === "shell" ? "批准执行此命令" : "批准模拟操作");
   if (prefilledRun !== value.run_id && !formDirty) {
     $("workspace").value = metadata.workspace || $("workspace").value;
     $("task").value = metadata.task || "";

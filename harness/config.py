@@ -21,6 +21,8 @@ class Config:
     total_timeout_seconds: float = 360
     request_timeout_seconds: float = 90
     tool_timeout_seconds: float = 5
+    approval_timeout_seconds: float = 60
+    shell_timeout_seconds: float = 60
     max_retries: int = 2
     retry_base_seconds: float = 0.5
     max_input_chars: int = 64000
@@ -61,7 +63,8 @@ class Config:
         if type(self.max_retries) is not int or not 0 <= self.max_retries <= 10:
             raise ValueError("max_retries must be between 0 and 10")
         for name in ("total_timeout_seconds", "request_timeout_seconds",
-                     "tool_timeout_seconds", "retry_base_seconds"):
+                     "tool_timeout_seconds", "retry_base_seconds",
+                     "approval_timeout_seconds", "shell_timeout_seconds"):
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be positive and finite")

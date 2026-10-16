@@ -106,4 +106,17 @@ assert.equal(element("status").textContent, "准备就绪");
 assert.match(element("answer").textContent, /让想法成为结果/);
 assert.equal(element("events").children.length, 0);
 assert.equal(element("approval-section").hidden, true);
-console.log("PASS: budget explanations, tabs and keyboard navigation, safe Markdown, deduplication, 300-node limits, log clearing, follow toggle, empty-state reset");
+value.status = "awaiting_approval";
+value.approval = {type: "shell", id: "approval-one", status: "pending", command: "<script>bad()</script>",
+  shell: "powershell.exe", workspace: "D:/trusted", timeout_seconds: 10, argv: ["powershell.exe", "-Command", "<script>bad()</script>"]};
+context.render(value);
+assert.equal(element("approval-section").hidden, false);
+assert.match(element("approval").textContent, /<script>bad\(\)<\/script>/);
+assert.match(element("approval").textContent, /powershell.exe/);
+assert.match(element("approval").textContent, /timeout_seconds/);
+assert.equal(element("approve").textContent, "批准执行此命令");
+assert.equal(element("approve").disabled, false);
+value.approval.status = "approved";
+context.render(value);
+assert.equal(element("approve").disabled, true);
+console.log("PASS: budget explanations, tabs, safe Markdown and shell approval text, deduplication, node limits, logs, keyboard navigation, empty-state reset, single-use approval controls");

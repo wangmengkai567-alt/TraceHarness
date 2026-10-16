@@ -1,8 +1,8 @@
-# AI Agent Harness MVP — 阶段三
+# AI Agent Harness MVP — 阶段四
 
 已实现 Python 的最小运行核心：任务 → 模型 → 受控工具 → 反馈 → 终态。模型使用 OpenAI 兼容的 Chat Completions 工具协议，模型及服务地址由用户配置。
 
-包含配置、有限请求重试、运行预算、取消和事件记录，以及根目录 `AGENTS.md` 冻结快照、可调整计划、带来源的任务记忆、受限上下文和工作目录内的文本文件工具。已加入本地 Web 任务工作台、执行轨迹、取消和模拟审批；尚无真实 shell 或 Tavily 工具。
+包含配置、有限请求重试、运行预算、取消和事件记录，以及根目录 `AGENTS.md` 冻结快照、可调整计划、带来源的任务记忆、受限上下文和工作目录内的文本文件工具。已加入本地 Web 任务工作台、执行轨迹、取消、逐条真实 Shell 审批及 Windows 进程树控制；尚无 Tavily 工具。
 
 阶段三使用方法与验收见 [阶段三验收](docs/STAGE_THREE_ACCEPTANCE.md)，架构与接口边界见 [阶段三设计](docs/STAGE_THREE_DESIGN.md)。阶段二记录保留于 [阶段二验收](docs/STAGE_TWO_ACCEPTANCE.md)。
 
@@ -63,7 +63,7 @@ python -m harness live-check --env-file .env --config config.example.json
 python -m harness run --env-file .env --task "先用工具计算47+58，再用返回值乘以3，报告结果。"
 ```
 
-`run` 必须显式提供 `--task`，没有预置业务任务或模拟 provider。文件任务使用 `--workspace <目录>` 指定边界；联网搜索和 shell 尚未接入。
+`run` 必须显式提供 `--task`，没有预置业务任务或模拟 provider。文件任务使用 `--workspace <目录>` 指定边界；联网搜索尚未接入，真实 shell 仅在 Web 审批下开放。
 
 配置优先级：命令行覆盖项 > 现有进程环境 > 显式 `.env` > JSON 配置 > 默认值。不会自动寻找父目录 `.env`；需传入 `--env-file`。JSON 使用 `config.example.json` 中的字段，未知字段（包括密钥字段）会被拒绝。
 
@@ -151,7 +151,17 @@ python -m tests.live_stage_three
 python -m tests.live_stage_three --run-id <run-id>
 ```
 
-全套检查为 51 项，真实 Web 模型样例及浏览器交互已验证，详细证据见阶段三验收。正常模型结束仍为 unverified；模型自检与计划 completed 不表示通用检查器已通过。真实 shell、进程树控制及完整失败恢复继续按阶段四、五推进。
+阶段三历史检查与真实 Web 模型样例及浏览器交互证据见阶段三验收。正常模型结束仍为 unverified；模型自检与计划 completed 不表示通用检查器已通过。阶段四新增真实 shell 与进程树控制，完整失败恢复留待阶段五。
+
+## 阶段四 Shell
+
+通过上述 Web 启动命令运行，在可信项目任务中请求执行命令。模型调用 `run_command` 后，右侧审批卡展示命令、完整 argv、shell、工作目录和时限；核对后点击“批准执行此命令”或“拒绝”。每次调用、重试、检查命令均须独立审批。审批过期、取消和终态后不能批准；页面关闭不会自动批准。
+
+默认审批等待和单命令上限均为 60 秒，通过 JSON 的 `approval_timeout_seconds`、`shell_timeout_seconds` 调整。审批和执行共同计入任务总时限，普通工具仍使用 `tool_timeout_seconds`。Windows 固定使用系统 Windows PowerShell，非交互执行；结果保留 shell 退出码、有界输出与超时标识。命令结束后会清理剩余后台子进程，不支持启动常驻服务。
+
+超时、取消、服务正常关闭均先终止进程树并确认退出；终止未确认显示执行失败并阻止新任务，需人工检查后重启。Shell 不是沙箱，可访问工作目录以外资源，仅用于可信项目。普通 CLI 无审批入口，不提供 shell。
+
+设计与验收见 [阶段四设计](docs/STAGE_FOUR_DESIGN.md)、[阶段四验收](docs/STAGE_FOUR_ACCEPTANCE.md)。固定无害命令的真实模型验收可运行 `python -m tests.live_stage_four`；该脚本会调用配置的真实模型，产生 API 用量。
 
 ## 问答与轮数预算
 

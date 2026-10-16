@@ -13,6 +13,8 @@ from .store import RunStore, utc_now
 from .tools import CoreTools, bound_result
 from .files import FileError, FileTools
 from .context import RunTools, TaskContext
+from .processes import TerminationUnconfirmed
+from .shell import ShellTools
 
 T = TypeVar("T")
 LIVE_CHECK_TASK = "先调用 add_integers 计算 47+58，再把工具返回值交给 multiply_integers 乘以 3，报告最终结果。"
@@ -30,11 +32,13 @@ class Halt(Exception):
 
 class Runner:
     def __init__(self, config: Config, model: Model, *, tools: Tools | None = None,
-                 secrets: tuple[str, ...] = ()):
+                 secrets: tuple[str, ...] = (), approve=None):
         config.validate()
         self.config, self.model = config, model
         self.tools = tools if tools is not None else CoreTools()
         self.secrets = secrets
+        self.approve = approve
+        self.termination_unconfirmed = False
 
     async def run(self, task: str, workspace: Path,
                   cancel: asyncio.Event | None = None, *, store: RunStore | None = None) -> dict:
@@ -89,7 +93,10 @@ class Runner:
                 for pending in (job, cancelled):
                     if not pending.done():
                         pending.cancel()
-                await asyncio.gather(job, cancelled, return_exceptions=True)
+                outcomes = await asyncio.gather(job, cancelled, return_exceptions=True)
+                if any(isinstance(outcome, TerminationUnconfirmed) for outcome in outcomes):
+                    self.termination_unconfirmed = True
+                    raise Halt(Status.FAILED, "process_termination_unconfirmed")
 
         def finish(status: Status, reason: str, answer: str | None = None) -> dict:
             result = store.redact({
@@ -117,7 +124,9 @@ class Runner:
             store.emit("rules_loaded", **rules)
             context = TaskContext(task, rules, store, config.max_state_chars)
             store.write_json("state.json", context.snapshot())
-            run_tools = RunTools(self.tools, files, context)
+            core = (ShellTools(workspace, config, self.approve, store.emit, cancel, self.tools)
+                    if self.approve else self.tools)
+            run_tools = RunTools(core, files, context)
             for turn in range(1, config.max_turns + 1):
                 check()
                 turns = turn
@@ -193,8 +202,13 @@ class Runner:
                     tool_calls += 1
                     store.emit("tool_requested", call_id=call.id, name=call.name, arguments=call.arguments)
                     try:
-                        result = await controlled(run_tools.execute(call), config.tool_timeout_seconds,
+                        timeout = (config.approval_timeout_seconds + config.shell_timeout_seconds + 1
+                                   if call.name == "run_command" and self.approve else config.tool_timeout_seconds)
+                        result = await controlled(run_tools.execute(call), timeout,
                                                   "tool_timeout")
+                    except TerminationUnconfirmed:
+                        self.termination_unconfirmed = True
+                        raise Halt(Status.FAILED, "process_termination_unconfirmed") from None
                     except Halt:
                         raise
                     except ModelError as error:

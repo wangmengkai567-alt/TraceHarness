@@ -53,14 +53,15 @@ class RunManager:
     """One active task; all mutations happen on the serving asyncio loop."""
 
     def __init__(self, config: Config, model_factory=None, secret_values: tuple[str, ...] = (),
-                 *, approval_timeout: float = 60):
+                 *, approval_timeout: float | None = None):
         config.validate()
         self.config, self.root = config, Path(config.runs_dir).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.secrets = tuple(value for value in secret_values if value)
         self.model_factory = model_factory or (lambda: OpenAICompatibleModel(
             config, os.environ.get("HARNESS_API_KEY", "")))
-        self.approval_timeout = approval_timeout
+        self.approval_timeout = approval_timeout if approval_timeout is not None else config.approval_timeout_seconds
+        self.process_control_blocked = False
         self.active: ActiveRun | None = None
         # A terminal result is authoritative; old unfinished runs are displayed, never resumed.
         self.jobs: set[asyncio.Task] = set()
@@ -87,6 +88,8 @@ class RunManager:
         record.job.add_done_callback(self.jobs.discard)
 
     async def start(self, body: dict) -> dict:
+        if self.process_control_blocked:
+            raise APIError(409, "process_termination_unconfirmed_restart_required")
         if set(body) - {"task", "workspace", "mode"}:
             raise APIError(400, "unknown_fields")
         task, workspace, mode = body.get("task"), body.get("workspace"), body.get("mode", "model")
@@ -119,8 +122,11 @@ class RunManager:
 
     async def run_model(self, record: ActiveRun, task: str, workspace: Path, model):
         try:
-            result = await Runner(self.config, model, secrets=self.secrets).run(
+            runner = Runner(self.config, model, secrets=self.secrets,
+                            approve=lambda spec: self.request_approval(record, spec))
+            result = await runner.run(
                 task, workspace, record.cancel, store=record.store)
+            self.process_control_blocked = runner.termination_unconfirmed
             record.status = result["status"]
         except asyncio.CancelledError:
             record.status = "cancelled"
@@ -129,6 +135,32 @@ class RunManager:
             # Keep raw IO/provider exceptions out of the UI and logs.
             record.status = "failed"
             record.store.emit("web_run_error", code="run_start_or_storage_error")
+
+    async def request_approval(self, record: ActiveRun, spec: dict):
+        duration = self.approval_timeout
+        record.approval = {**spec, "id": uuid4().hex, "run_id": record.store.run_id,
+                           "type": "shell", "status": "pending", "approval_timeout_seconds": duration}
+        record.approval_deadline = time.monotonic() + duration
+        record.decision = asyncio.get_running_loop().create_future()
+        record.status = "awaiting_approval"
+        record.store.emit("approval_requested", **record.approval)
+        try:
+            decision = await asyncio.wait_for(asyncio.shield(record.decision), duration)
+            if record.cancel.is_set():
+                return "cancelled"
+            return decision
+        except TimeoutError:
+            record.approval["status"] = "expired"
+            record.store.emit("approval_expired", approval_id=record.approval["id"])
+            return "expired"
+        except asyncio.CancelledError:
+            record.approval["status"] = "cancelled"
+            record.store.emit("approval_cancelled", approval_id=record.approval["id"])
+            raise
+        finally:
+            if not record.decision.done():
+                record.decision.cancel()
+            record.status = "running"
 
     async def run_demo(self, record: ActiveRun, task: str, workspace: Path):
         """An approval state-machine exercise, never a model or command executor."""

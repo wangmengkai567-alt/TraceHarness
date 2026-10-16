@@ -4,7 +4,7 @@
 
 日期：2026-10-14
 
-状态：阶段一、二已交付；阶段三已授权并完成实现、工程检查与真实 Web 模型任务验收，详见 docs/STAGE_THREE_ACCEPTANCE.md；阶段四至六尚未开始。
+状态：阶段一至四已交付；阶段四已完成逐条 Shell 审批、Windows 进程树控制、工程检查及真实模型 Web API 验收，详见 docs/STAGE_FOUR_ACCEPTANCE.md；阶段五、六尚未开始。
 
 ## 1. 目标与范围
 
@@ -13,7 +13,7 @@
 已确认的范围：
 
 - Python 核心；前端简单可用，展示任务、规划、工具调用、重试、状态与答案。
-- 开发环境使用 conda，由 `environment.yml` 定义；不使用 Python venv。
+- 开发环境使用 conda，由 `environment.yml` 定义。
 - 本地源码直接运行，pip 通过 `requirements.txt` 安装依赖；不打包或安装项目本身。
 - 模型配置使用环境变量或配置文件，不做专门的配置后台。
 - 支持规划、任务内记忆、有限失败重试、模型交互、工具执行、记录与结果检查。
@@ -177,3 +177,5 @@
 阶段二交付与限制见 `docs/STAGE_TWO_DESIGN.md`、`docs/STAGE_TWO_ACCEPTANCE.md` 和 `examples/stage_two/`。
 
 阶段三交付与限制见 `docs/STAGE_THREE_DESIGN.md`、`docs/STAGE_THREE_ACCEPTANCE.md`；启动方式为 `python -m harness serve --env-file .env`。
+
+阶段四交付与限制见 `docs/STAGE_FOUR_DESIGN.md`、`docs/STAGE_FOUR_ACCEPTANCE.md`；真实 shell 仅在 Web 审批代理下开放，普通 CLI 不提供 shell。

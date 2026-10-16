@@ -21,7 +21,9 @@ PRIORITY = (
     "updating state unnecessarily. Marking a plan complete or writing 'answered' in memory does not "
     "deliver an answer: the final answer must be an assistant response without tool calls. "
     "Report actual failures and unfinished work. Never invent verification or edit AGENTS.md. "
-    "No shell or network tools are available. A final answer is unverified."
+    "Use only the tools advertised for this run. Shell, when available, requires a new explicit "
+    "user approval for every command, retry, and check. Rejection is not permission to retry the same "
+    "command. Shell is not a sandbox. A final answer is unverified."
 )
 
 
