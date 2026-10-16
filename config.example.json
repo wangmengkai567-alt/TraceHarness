@@ -27,5 +27,15 @@
   "max_model_repairs": 2,
   "max_consecutive_failures": 3,
   "max_verification_attempts": 2,
-  "checks": []
+  "checks": [],
+  "network_enabled": false,
+  "search_timeout_seconds": 30,
+  "extract_timeout_seconds": 45,
+  "max_search_requests": 5,
+  "max_extract_requests": 10,
+  "search_max_results": 5,
+  "network_max_response_bytes": 2097152,
+  "max_web_document_chars": 200000,
+  "max_web_storage_chars": 500000,
+  "web_chunk_chars": 4000
 }

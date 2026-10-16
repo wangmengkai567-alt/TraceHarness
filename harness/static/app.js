@@ -3,12 +3,15 @@ const $ = (id) => document.getElementById(id);
 const MAX_VISIBLE_EVENTS = 300;
 let token = "", selected = "", cursor = 0, epoch = 0, loading = false, posting = false;
 let snapshot = null, runs = [], nextHistory = 0, activeTab = "answer";
+let lastNetworkKey = "";
 let displayedLogs = 0, observedTurn = 0, lastAnswerKey = "", lastPlanKey = "", lastHistoryKey = "", prefilledRun = "", formDirty = false;
 const seen = new Set();
 const statuses = {running: "运行中", verifying: "正在检查", awaiting_approval: "等待审批", cancelling: "正在取消", cancelled: "已取消", completed: "指定检查通过", verification_failed: "检查失败", unverified: "已结束 · 未验证", failed: "执行失败", budget_exceeded: "预算耗尽", interrupted: "运行已中断"};
 const activeStatuses = new Set(["running", "verifying", "awaiting_approval", "cancelling"]);
 const reasons = {configured_checks_failed: "配置检查未全部通过，详见检查证据。", repeated_tool_failure: "连续相同工具失败达到上限，已停止派发。", tool_call_limit: "工具调用总预算已耗尽。", process_termination_unconfirmed: "无法确认进程树已结束；已停止后续操作，请检查残留进程。", turn_limit: "已达到模型交互轮数上限，未收到有效的最终答复。请查看执行轨迹；需要继续时可调整 max_turns 后发起新任务。", model_call_limit: "已达到模型请求次数上限（包含重试），未收到最终答复。", total_timeout: "已达到本次运行的总时长上限。", input_char_limit: "模型输入超过上下文字符预算。", model_request_timeout: "模型请求超时，有限重试后仍未成功。"};
 const eventNames = {verification_started: "开始检查", verification_finished: "检查结束", check_started: "执行检查项", check_finished: "检查项结果", model_repair_requested: "请求修正模型格式", run_started: "运行开始", rules_loaded: "规范已加载", plan_updated: "计划变更", memory_updated: "记忆更新", model_requested: "请求模型", model_responded: "模型回复", tool_requested: "调用工具", tool_responded: "工具反馈", model_error: "模型错误", model_retry_scheduled: "请求重试", context_history_limited: "历史裁剪", final_response_requested: "请求最终答复", tool_dispatch_blocked: "已阻止工具调用", cancel_requested: "请求取消", approval_requested: "等待审批", approval_decided: "审批决定", approval_cancelled: "审批已取消", approval_expired: "审批已过期", simulated_action_completed: "模拟操作完成", run_finished: "运行结束"};
+Object.assign(eventNames, {network_request: "发送网络请求", network_response: "收到网络响应", network_error: "网络错误",
+  network_retry_scheduled: "网络请求重试", network_operation: "联网工具结束"});
 function text(id, value) { if ($(id).textContent !== String(value ?? "")) $(id).textContent = value ?? ""; }
 function pretty(value) { return JSON.stringify(value, null, 2); }
 function node(tag, className, content) {
@@ -63,18 +66,53 @@ function setTab(name, focus = false) {
 }
 function inlineContent(target, value) {
   const tick = String.fromCharCode(96);
-  const tokens = String(value).split(new RegExp("(\\*\\*[^*]+\\*\\*|" + tick + "[^" + tick + "]+" + tick + ")", "g"));
+  const tokens = String(value).split(new RegExp("(\\[[^\\]\\n]+\\]\\(https?://[^\\s)]+\\)|\\*\\*[^*]+\\*\\*|" + tick + "[^" + tick + "]+" + tick + ")", "g"));
   for (const part of tokens) {
-    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) target.append(node("strong", "", part.slice(2, -2)));
+    const link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+    if (link) target.append(sourceLink(link[1], link[2]));
+    else if (part.startsWith("**") && part.endsWith("**") && part.length > 4) target.append(node("strong", "", part.slice(2, -2)));
     else if (part.startsWith(tick) && part.endsWith(tick) && part.length > 2) target.append(node("code", "", part.slice(1, -1)));
     else target.append(document.createTextNode(part));
   }
+}
+function sourceLink(label, url) {
+  try {
+    const parsed = new URL(url);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || /[\s\\\u0000-\u001f]/.test(url)) throw new Error();
+    const link = node("a", "", label);
+    link.href = parsed.href; link.target = "_blank"; link.rel = "noopener noreferrer";
+    return link;
+  } catch { return node("span", "", label + " · 无效来源链接"); }
+}
+function renderSources(network, citations) {
+  const key = pretty({network, citations});
+  if (key === lastNetworkKey) return;
+  lastNetworkKey = key;
+  const target = $("web-sources"); target.replaceChildren();
+  target.append(node("h3", "", "网络来源"));
+  target.append(node("p", "muted", network?.available ? "联网已启用 · 搜索请求 " + (network.requests?.search || 0) + " · 正文提取 " + (network.requests?.extract || 0) :
+    network?.unavailable_reason === "network_key_missing" ? "联网不可用：缺少 Tavily 密钥" : "本次运行未启用联网"));
+  for (const source of network?.sources || []) {
+    const details = node("details", "context-details"), summary = node("summary");
+    summary.append(document.createTextNode(source.source_id + " · "), sourceLink(source.title || source.url, source.url));
+    details.append(summary, node("p", "muted", "记录时间：" + dateText(source.fetched_at || source.observed_at)));
+    if (source.document_id) {
+      details.append(node("p", "", "已保存提取正文 " + source.stored_chars + " 字符；已读范围：" +
+        (source.read_ranges || []).map((range) => range.join("–")).join("、") + "。" +
+        (source.saved_body_fully_read ? "已读完保存的正文。" : "尚未读完保存的正文。") +
+        (source.storage_truncated ? "正文超过存储上限，保存内容已截断。" : "") + "无法保证提取结果等于原网页完整内容。"));
+    } else details.append(node("p", "", "仅取得搜索摘要，尚未读取正文。"));
+    const raw = node("details"); raw.append(node("summary", "", "来源记录详情"), node("pre", "", pretty(source)));
+    details.append(raw);
+    target.append(details);
+  }
+  if (citations?.unknown?.length) target.append(node("p", "", "回答包含未知来源编号：" + citations.unknown.join("、")));
 }
 function renderAnswer(value) {
   const target = $("answer");
   target.replaceChildren();
   const tick = String.fromCharCode(96), fence = tick.repeat(3);
-  if (!/(^#{1,6} |^\s*[-*]\s|^\s*\d+\.\s|\*\*|^\|)/m.test(value) && !value.includes(tick)) {
+  if (!/(^#{1,6} |^\s*[-*]\s|^\s*\d+\.\s|\*\*|^\||\[[^\]]+\]\(https?:\/\/)/m.test(value) && !value.includes(tick)) {
     target.textContent = value; target.className = "answer-content plain-line"; return;
   }
   target.className = "answer-content";
@@ -133,6 +171,7 @@ function emptyAnswer(title, description) {
 function render(value) {
   snapshot = value;
   const metadata = value.metadata || {}, result = value.result, config = metadata.config || {};
+  renderSources(value.network || result?.network, result?.citation_check);
   text("status", statuses[value.status] || value.status);
   text("overview-badge", value.status === "unverified" ? "未验证" : statuses[value.status] || value.status);
   $("overview-badge").dataset.status = value.status;
@@ -214,9 +253,10 @@ function eventHint(event) {
   let hint = data.name || data.reason || data.code || data.decision || "";
   if (event.type === "model_responded") hint = data.message?.content || "工具调用响应";
   if (event.type === "tool_requested") {
-    try { const args = JSON.parse(data.arguments); if (typeof args.path === "string") hint += " · " + args.path; } catch {}
+    try { const args = JSON.parse(data.arguments); hint += " · " + (args.path || args.query || args.url || args.document_id || ""); } catch {}
   }
   if (event.type === "tool_responded" && data.result) hint += " · " + (data.result.ok ? "成功" : "失败") + (data.result.error ? " · " + data.result.error : "");
+  if (event.type === "network_operation") hint = data.name + " · " + data.elapsed_seconds + " 秒 · " + (data.error || "成功");
   if (event.type === "plan_updated") hint = data.reason || "";
   if (event.type === "model_retry_scheduled") hint = data.delay_seconds + " 秒后重试";
   if (event.type === "context_history_limited") hint = "保留近期交互，省略 " + data.omitted_turns + " 轮旧历史";
@@ -405,6 +445,8 @@ async function boot() {
   try {
     const session = await api("/api/session"); token = session.token;
     $("workspace").value = session.default_workspace;
+    text("network-notice", session.network_available ? "联网已启用：搜索词和待读网址会发送给 Tavily，模型可在预算内自动调用。" :
+      session.network_enabled ? "联网不可用：尚未配置 Tavily 密钥。" : "联网默认关闭；启用后搜索词和待读网址会发送给 Tavily。");
     const run = location.hash.slice(1) || localStorage.getItem("harness.run") || "";
     await loadHistory();
     select(validRunId(run) ? run : (runs.find((r) => activeStatuses.has(r.status))?.run_id || ""));

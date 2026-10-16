@@ -2,6 +2,8 @@
 
 交付日期：2026-10-16。阶段一至六完成；本地单用户、单任务、Python/FastAPI 单体、源码运行。完整证据见 [阶段六验收](STAGE_SIX_ACCEPTANCE.md)。
 
+阶段七扩展已接入 Tavily 搜索与网页正文读取，默认关闭。启用需在 `.env` 填写 `TAVILY_API_KEY`，并在启动使用的 JSON 中设置 `network_enabled=true` 后重启；搜索词和待读网址会发送给 Tavily。工具、长文续读、请求预算与复现方法见 [README 阶段七说明](../README.md#阶段七联网搜索与网页正文读取)，证据见 [阶段七验收](STAGE_SEVEN_ACCEPTANCE.md)。
+
 ## 从源码启动
 
 在仓库根目录使用已初始化 conda 的 PowerShell：
@@ -99,4 +101,4 @@ python -m harness inspect <run-id> --runs-dir <records目录> --events
 
 Shell 审批不是沙箱，批准的命令能访问工作目录外资源、网络与继承环境，仅用于可信项目。文件工具的路径边界不约束 shell。Windows Job Object 管理正常子孙进程，不覆盖借助系统服务等外部代理启动的独立进程。POSIX 分支本次未验收。
 
-仅支持有限文本文件操作、两类配置检查和 OpenAI 兼容 Chat Completions 接口；没有搜索工具、跨任务记忆、断点续跑、通用 hooks、多 Agent、模型路由、账号、自动提交/部署或项目隔离。任务记忆、文件哈希与日志不能替代沙箱或事务。下一迭代在开放自主 shell 前必须先具备并验收隔离能力。
+支持有限文本文件操作、两类配置检查、OpenAI 兼容 Chat Completions 接口，以及可选的 Tavily 搜索与网页正文读取；没有跨任务记忆、断点续跑、通用 hooks、多 Agent、模型路由、账号、自动提交/部署或项目隔离。网页提取不能保证原文完整或覆盖登录及交互页面。任务记忆、文件哈希与日志不能替代沙箱或事务。后续开放自主 shell 前必须先具备并验收隔离能力。

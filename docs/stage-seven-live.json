@@ -1,0 +1,250 @@
+{
+  "kind": "real-model-real-Tavily",
+  "model": "qwen3.8-flash",
+  "config": {
+    "provider": "openai_compatible",
+    "model": "",
+    "base_url": "",
+    "max_turns": 18,
+    "max_model_calls": 22,
+    "max_tool_calls_per_turn": 4,
+    "total_timeout_seconds": 330,
+    "request_timeout_seconds": 90,
+    "tool_timeout_seconds": 5,
+    "approval_timeout_seconds": 60,
+    "shell_timeout_seconds": 60,
+    "max_retries": 2,
+    "retry_base_seconds": 0.5,
+    "max_input_chars": 64000,
+    "max_output_chars": 8000,
+    "max_response_bytes": 262144,
+    "max_completion_tokens": 2048,
+    "completion_token_parameter": "max_tokens",
+    "runs_dir": "D:\\My_workspace\\harness\\runs\\stage-seven-4fcf984d57394026aa3829bdc1d3f6aa\\runs",
+    "max_file_bytes": 65536,
+    "max_rules_bytes": 16384,
+    "max_directory_entries": 200,
+    "recent_history_turns": 4,
+    "max_state_chars": 16000,
+    "max_tool_calls": 64,
+    "max_model_repairs": 2,
+    "max_consecutive_failures": 3,
+    "max_verification_attempts": 2,
+    "checks": [],
+    "network_enabled": true,
+    "search_timeout_seconds": 30,
+    "extract_timeout_seconds": 45,
+    "max_search_requests": 5,
+    "max_extract_requests": 10,
+    "search_max_results": 5,
+    "network_max_response_bytes": 2097152,
+    "max_web_document_chars": 200000,
+    "max_web_storage_chars": 500000,
+    "web_chunk_chars": 4000
+  },
+  "cases": [
+    {
+      "run_id": "20261016001",
+      "run_directory": "D:\\My_workspace\\harness\\runs\\stage-seven-4fcf984d57394026aa3829bdc1d3f6aa\\runs\\20261016001",
+      "checks": {
+        "ended_with_answer": true,
+        "read_body": true,
+        "body_feedback_seen_by_model": true,
+        "all_saved_bodies_read": true,
+        "citations_exist": true,
+        "answer_contains_body_details": true,
+        "refresh_does_not_replay": true,
+        "events_match_disk": true,
+        "no_shell": true,
+        "searched_before_reading": true
+      },
+      "search_calls": 1,
+      "read_calls": 1,
+      "answer": "## 来源与阅读情况\n\n- 选用的官方页面：**HTTPX 官方文档 “Timeouts”** — https://www.python-httpx.org/advanced/timeouts [S3]\n- 已用 `read_webpage` 从偏移 0 读取，返回 `extracted_chars = stored_chars = 3019`、`next_offset = null`、`end_of_saved_body = true`，读取区间 [0, 3019) 覆盖了全部已保存正文，因此**保存的提取正文已完整读完**，无需续读。（说明：提取正文本身不保证等于原始页面 100% 完整，`original_completeness = unknown`；不过该页导航列出的三节——Setting and disabling timeouts / Setting a default timeout on a client / Fine tuning the configuration——在正文中均已出现。）\n\n## 默认超时秒数\n\n- 官方 Timeouts 页明确：“HTTPX is careful to enforce timeouts everywhere by default. The default behavior is to raise a `TimeoutException` after **5 seconds of network inactivity**.” 即默认 **5.0 秒**（针对网络不活跃/空闲）[S3]。\n- 快速入门页同样印证：“HTTPX defaults to including reasonable timeouts for all network operations… The default timeout for network inactivity is **five seconds**”，并可用 `timeout=0.001` 之类调紧、`timeout=None` 完全关闭 [S1]（https://www.python-httpx.org/quickstart）。\n- 设置方式 [S3]：\n  - 单次请求：`httpx.get(..., timeout=10.0)` 或 `client.get(..., timeout=10.0)`；`timeout=None` 则对该请求禁用超时。\n  - 客户端默认：`httpx.Client(timeout=10.0)` 作为该客户端所有请求的默认值；`httpx.Client(timeout=None)` 默认禁用全部超时。\n  - 细粒度覆盖：`httpx.Timeout(10.0, connect=60.0)` —— 其余项默认 10 秒，connect 单独 60 秒。\n\n## 四种超时分别控制什么\n\n官方页面列出四种可能发生的超时：**connect、read、write、pool**，各自超限抛出对应异常 [S3]：\n\n| 超时类型 | 控制的对象 | 超限异常 |\n|---|---|---|\n| **connect** | 等待与目标主机建立 socket 连接的最大时间；在此时间内无法连上即报错。（页面措辞为“socket connection to the requested host is established”，未说明是否包含 DNS 解析/TLS 握手等细节） | `ConnectTimeout` |\n| **read** | 等待**收到**一块数据（例如响应体的一个 chunk）的最大时间；在此时间内收不到数据即报错。这就是默认 5 秒“网络不活跃”对应的主要维度。 | `ReadTimeout` |\n| **write** | 等待**发送**一块数据（例如请求体的一个 chunk）的最大时间；在此时间内发不出数据即报错。 | `WriteTimeout` |\n| **pool** | 等待从连接池**获取（acquire）一个连接**的最大时间；取不到连接即报错。与之相关的配置是连接池允许的最大连接数，通过 `limits` 参数设置。 | `PoolTimeout` |\n\n补充（来自检索结果，仅 snippet、未逐页读取，故不作细节断言）：HTTPX 的超时实际是以请求扩展 `extensions={\"timeout\": {\"connect\": 5.0}}` 的形式贯穿整个调用栈实现的，官方建议用高层 `timeout` API 而非直接操作该扩展 [S5]（https://www.python-httpx.org/advanced/extensions）；关于 connect 是否含 DNS/TLS 的讨论见 encode/httpx Discussion #3164 [S4]（https://github.com/encode/httpx/discussions/3164）。另请注意 [S2]（honeyryderchuck.gitlab.io）是 Ruby 版 httpx 的 wiki，**不是** Python HTTPX 官方文档，其列出的 `:keep_alive_timeout`（默认 20）等五项超时不适用于本页所述的 Python 四种超时。",
+      "continuation_calls": 0,
+      "continuation_requests": 0,
+      "network": {
+        "enabled": true,
+        "available": true,
+        "unavailable_reason": null,
+        "requests": {
+          "search": 1,
+          "extract": 1
+        },
+        "sources": [
+          {
+            "source_id": "S1",
+            "url": "https://www.python-httpx.org/quickstart",
+            "title": "QuickStart - HTTPX",
+            "observed_at": "2026-10-16T03:56:00.437358+00:00",
+            "status": "snippet_only"
+          },
+          {
+            "source_id": "S2",
+            "url": "https://honeyryderchuck.gitlab.io/httpx/wiki/Timeouts",
+            "title": "Timeouts · honeyryder",
+            "observed_at": "2026-10-16T03:56:00.437358+00:00",
+            "status": "snippet_only"
+          },
+          {
+            "source_id": "S3",
+            "url": "https://www.python-httpx.org/advanced/timeouts",
+            "title": "Timeouts - HTTPX",
+            "observed_at": "2026-10-16T03:56:00.437358+00:00",
+            "status": "body_extracted",
+            "document_id": "D1",
+            "provider_returned_url": "https://www.python-httpx.org/advanced/timeouts",
+            "fetched_at": "2026-10-16T03:56:04.842887+00:00",
+            "extracted_chars": 3019,
+            "stored_chars": 3019,
+            "storage_truncated": false,
+            "original_completeness": "unknown",
+            "sha256": "1137bda64013af5cca2c9b39bf21a26dbb3a4fe73a2b520503ebb923cd3c9165",
+            "read_ranges": [
+              [
+                0,
+                3019
+              ]
+            ],
+            "saved_body_fully_read": true
+          },
+          {
+            "source_id": "S4",
+            "url": "https://github.com/encode/httpx/discussions/3164",
+            "title": "What is included in the \"connect\" timeout? · encode/httpx · Discussion #3164 · GitHub",
+            "observed_at": "2026-10-16T03:56:00.437358+00:00",
+            "status": "snippet_only"
+          },
+          {
+            "source_id": "S5",
+            "url": "https://www.python-httpx.org/advanced/extensions",
+            "title": "Extensions - HTTPX",
+            "observed_at": "2026-10-16T03:56:00.437358+00:00",
+            "status": "snippet_only"
+          }
+        ],
+        "storage_chars": 3019
+      }
+    },
+    {
+      "run_id": "20261016002",
+      "run_directory": "D:\\My_workspace\\harness\\runs\\stage-seven-4fcf984d57394026aa3829bdc1d3f6aa\\runs\\20261016002",
+      "checks": {
+        "ended_with_answer": true,
+        "read_body": true,
+        "body_feedback_seen_by_model": true,
+        "all_saved_bodies_read": true,
+        "citations_exist": true,
+        "answer_contains_body_details": true,
+        "refresh_does_not_replay": true,
+        "events_match_disk": true,
+        "no_shell": true,
+        "direct_url_without_search": true
+      },
+      "search_calls": 0,
+      "read_calls": 1,
+      "answer": "已直接读取该页面的全部提取正文（保存正文共 621 字符，offset 0–621 已全部读取，`next_offset` 为 `null`，即提取正文已读到末尾；无法保证这是原始页面的完整内容）。[S1]\n\n## `httpx.Limits` 的三个配置项\n\n来源：Resource Limits - HTTPX，https://www.python-httpx.org/advanced/resource-limits/ [S1]\n\n| 配置项 | 默认值 | 限制对象 |\n|---|---|---|\n| `max_keepalive_connections` | `20` | 允许的 keep-alive（保活复用）连接数量上限；设为 `None` 表示始终允许、不设上限。限制的是连接池中空闲保活连接的数量。 |\n| `max_connections` | `100` | 允许的连接总数上限（连接池整体规模）；设为 `None` 表示无限制。 |\n| `keepalive_expiry` | `5` | 空闲 keep-alive 连接的时间限制，单位为秒；设为 `None` 表示无时间限制。即一个保活连接闲置超过 5 秒后可被丢弃。 |\n\n## 使用方式\n\n这些配置通过客户端的 `limits` 关键字参数传入，其值为 `httpx.Limits` 实例。[S1]\n\n页面中的示例代码（按其提取正文原样呈现，提取版本中空格/换行有异常，可能是抓取时的格式损失）：[S1]\n\n```\nlimits = httpx.Limits(max_keepalive_connections=5, max_connections=10)\nclient = httpx.Client(limits=limits)\n```\n\n说明：正文只列出以上三项配置，未在此页给出关于 `keepalive_expiry` 与总连接数交互作用的更多细节；以上“限制对象”的解释基于该页对各项的原文定义（keep-alive 连接数、最大连接数、空闲保活时间）。未进行任何本地文件或 Shell 操作，也未先做搜索。",
+      "continuation_calls": 0,
+      "continuation_requests": 0,
+      "network": {
+        "enabled": true,
+        "available": true,
+        "unavailable_reason": null,
+        "requests": {
+          "search": 0,
+          "extract": 1
+        },
+        "sources": [
+          {
+            "source_id": "S1",
+            "url": "https://www.python-httpx.org/advanced/resource-limits/",
+            "title": "Resource Limits - HTTPX",
+            "observed_at": "2026-10-16T03:56:27.342301+00:00",
+            "status": "body_extracted",
+            "document_id": "D1",
+            "provider_returned_url": "https://www.python-httpx.org/advanced/resource-limits/",
+            "fetched_at": "2026-10-16T03:56:27.342301+00:00",
+            "extracted_chars": 621,
+            "stored_chars": 621,
+            "storage_truncated": false,
+            "original_completeness": "unknown",
+            "sha256": "ccb3cd9d8ab4987e601a5764d602c94ee1b3c11347902f432829a4cea328ca03",
+            "read_ranges": [
+              [
+                0,
+                621
+              ]
+            ],
+            "saved_body_fully_read": true
+          }
+        ],
+        "storage_chars": 621
+      }
+    },
+    {
+      "run_id": "20261016003",
+      "run_directory": "D:\\My_workspace\\harness\\runs\\stage-seven-4fcf984d57394026aa3829bdc1d3f6aa\\runs\\20261016003",
+      "checks": {
+        "ended_with_answer": true,
+        "read_body": true,
+        "body_feedback_seen_by_model": true,
+        "all_saved_bodies_read": true,
+        "citations_exist": true,
+        "answer_contains_body_details": true,
+        "refresh_does_not_replay": true,
+        "events_match_disk": true,
+        "no_shell": true,
+        "multiple_chunks_without_refetch": true
+      },
+      "search_calls": 0,
+      "read_calls": 3,
+      "answer": "已按要求从原始网址 https://www.python-httpx.org/advanced/clients/ 连续读取（offset 0 → 4000 → 8000 → next_offset=null），未使用任何代理网址，未操作本地文件或 Shell。来源：[S1] https://www.python-httpx.org/advanced/clients/（HTTPX 官方文档 \"Clients\" 页）。\n\n## 一、读取范围与完整性说明\n\n- 保存正文共 11351 字符，实际读取区间为 [0,4000)、[4000,8000)、[8000,11351)，三段并集完整覆盖 [0, stored_chars)，最后一块返回 `next_offset: null`、`end_of_saved_body: true`，因此**保存的提取正文已全部读完**，无跳过中间片段。\n- `storage_truncated: false`，但 `original_completeness: \"unknown\"`：已读范围只代表提取到的正文，**不能证明等于原始页面完整内容**。\n- 提取正文中的代码块被明显扁平化/重排（例如 `with httpx. Client() as client:...`、缩进与 `>>>` 提示符混乱），故示例代码的精确排版不可靠；下面的结论以散文字段与可辨认的示例输出为准。\n- 注意：正文里出现 \"Merging of parameters\" 的锚点引用，而该章节标题实际为 \"Merging of configuration\"（文档内部锚点不一致）。\n\n## 二、Client 的连接复用优势 [S1]\n\n- 顶层 API（如 `httpx.get()`）会**为每一个请求新建连接**（connections are not reused），对同一 host 的请求一多就迅速变得低效。\n- `Client` 实例使用 HTTP connection pooling（持久连接），对同一 host 的多次请求会**复用底层 TCP 连接**，而不是每次重建。\n- 由此带来的性能改进（文档列出三项）：\n  1. Reduced latency across requests（无需重新握手 handshaking）；\n  2. Reduced CPU usage and round-trips；\n  3. Reduced network congestion。\n- `Client` 还提供顶层 API 没有的额外能力：Cookie persistence across requests、Applying configuration across all outgoing requests、Sending requests through HTTP proxies、Using HTTP/2。\n- 用法建议：作为 context manager（`with httpx.Client() as client:`）以确保离开 `with` 块时正确清理连接；或在 `try/finally` 中显式调用 `.close()` 关闭连接池。\n\n## 三、客户端级与单次请求级配置合并时 headers / params / cookies 的行为 [S1]\n\n当同一配置项在 client-level 和 request-level 都提供时，属于两类行为之一：\n\n1. **headers、query parameters（`params`）、cookies：两边的值“合并/组合”（values are combined together），不是覆盖。** 文档示例中，`Client(headers={'X-Auth': 'from-client'}, params={'client_id': 'client1'})` 配合请求级 `headers={'X-Custom': 'from-request'}`、`params={'request_id': 'request1'}` 后：\n   - `r.request.url` 为 `URL('https://example.com?client_id=client1&request_id=request1')`（两组 query params 同时生效）；\n   - `r.request.headers['X-Auth']` → `'from-client'`，`r.request.headers['X-Custom']` → `'from-request'`（两组 header 同时保留）。\n   - 说明：cookies 的合并行为由该条散文规则明确包含（\"headers, query parameters and cookies\"），但页面示例只演示了 `headers` 与 `params`，没有 cookies 的具体合并示例。\n2. **其他所有参数：request-level 的值优先（takes priority）。** 示例为 client 级 `auth=('tom', 'mot123')` 被请求级 `auth=('alice', 'ecila123')` 覆盖——解码 `Authorization` header 得到 `b'alice:ecila123'`。\n3. 需要更精细控制合并结果时，文档指向 **Request instances**：可用 `httpx.Request(\"GET\", \"https://example.com\")` 显式构造并用 `client.send()` 发送；或用 `client.build_request(\"GET\", url)` 生成请求后任意修改（示例中 `del request.headers[\"X-Api-Key\"]` 保留 `X-Client-ID`），再 `client.send(request)`。\n4. 相关补充：某些仅 client 级可用的选项（如 `base_url='http://httpbin.org'`）会对所有发出请求做前缀拼接，`client.get('/headers')` 得到 `URL('http://httpbin.org/headers')`。\n\n以上结论均来自 [S1] https://www.python-httpx.org/advanced/clients/ 的已读正文（区间 [0, 11351)），英文参数名按要求保留。",
+      "continuation_calls": 2,
+      "continuation_requests": 0,
+      "network": {
+        "enabled": true,
+        "available": true,
+        "unavailable_reason": null,
+        "requests": {
+          "search": 0,
+          "extract": 1
+        },
+        "sources": [
+          {
+            "source_id": "S1",
+            "url": "https://www.python-httpx.org/advanced/clients/",
+            "title": "Clients - HTTPX",
+            "observed_at": "2026-10-16T03:56:43.184024+00:00",
+            "status": "body_extracted",
+            "document_id": "D1",
+            "provider_returned_url": "https://www.python-httpx.org/advanced/clients/",
+            "fetched_at": "2026-10-16T03:56:43.184024+00:00",
+            "extracted_chars": 11351,
+            "stored_chars": 11351,
+            "storage_truncated": false,
+            "original_completeness": "unknown",
+            "sha256": "a25203b84ca5690a565989499990cebfbc8979dcc08f218fa8ccc96b1117fb69",
+            "read_ranges": [
+              [
+                0,
+                11351
+              ]
+            ],
+            "saved_body_fully_read": true
+          }
+        ],
+        "storage_chars": 11351
+      }
+    }
+  ],
+  "passed": true,
+  "cleanup": {
+    "pid": 27508,
+    "exit_code": 0,
+    "process_exited": true,
+    "port": 50616,
+    "port_released": true,
+    "hard_stop": false
+  },
+  "no_keys_in_records": true
+}

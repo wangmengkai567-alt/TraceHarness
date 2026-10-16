@@ -20,6 +20,7 @@ class Element {
 const elements = new Map();
 const element = (id) => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
 const context = vm.createContext({
+  URL,
   document: {getElementById: element, createElement: (tag) => new Element(tag), createTextNode: (text) => { const node = new Element("#text"); node.textContent = text; return node; }},
   // Leave startup pending so these checks exercise rendering without HTTP or timers.
   fetch: () => new Promise(() => {}),
@@ -134,4 +135,20 @@ assert.equal(element("status").textContent, "检查失败");
 value.status = "verifying";
 context.render(value);
 assert.equal(element("cancel").disabled, false);
+value.network = {available: true, requests: {search: 1, extract: 1}, sources: [
+  {source_id: "S1", url: "https://example.com/article", title: "<script>bad()</script>", document_id: "D1", read_ranges: [[0, 100]]},
+  {source_id: "S2", url: "javascript:alert(1)", title: "bad link"}]};
+value.result.citation_check = {unknown: ["S99"]};
+context.render(value);
+const sources = element("web-sources");
+assert.match(sources.textContent, /搜索请求 1/);
+assert.match(sources.textContent, /未知来源编号：S99/);
+assert.equal(descendants(sources).filter((el) => el.tagName === "a").length, 1);
+assert(!descendants(sources).some((el) => el.tagName === "script"));
+const renderedSource = sources.children[2];
+context.render(value);
+assert.equal(sources.children[2], renderedSource, "polling must not replace unchanged source details");
+context.renderAnswer("[S1](https://example.com/article) [evil](javascript:alert(1))");
+assert.equal(descendants(element("answer")).filter((el) => el.tagName === "a").length, 1);
+assert.equal(descendants(element("answer")).find((el) => el.tagName === "a").rel, "noopener noreferrer");
 console.log("PASS: budget explanations, tabs, safe Markdown and approval/report text, node limits, logs, keyboard navigation, single-use approvals, verified/failed/verifying states");

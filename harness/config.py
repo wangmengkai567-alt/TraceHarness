@@ -40,9 +40,21 @@ class Config:
     max_model_repairs: int = 2
     max_consecutive_failures: int = 3
     max_verification_attempts: int = 2
+    network_enabled: bool = False
+    search_timeout_seconds: float = 30
+    extract_timeout_seconds: float = 45
+    max_search_requests: int = 5
+    max_extract_requests: int = 10
+    search_max_results: int = 5
+    network_max_response_bytes: int = 2097152
+    max_web_document_chars: int = 200000
+    max_web_storage_chars: int = 500000
+    web_chunk_chars: int = 4000
     checks: list[dict] = field(default_factory=list)
 
     def validate(self) -> None:
+        if type(self.network_enabled) is not bool:
+            raise ValueError("network_enabled must be boolean")
         if self.provider != "openai_compatible":
             raise ValueError("provider must be openai_compatible; simulated providers are not supported")
         for name in ("model", "base_url", "runs_dir"):
@@ -57,6 +69,8 @@ class Config:
             "max_file_bytes", "max_rules_bytes", "max_directory_entries",
             "recent_history_turns", "max_state_chars",
             "max_tool_calls", "max_consecutive_failures", "max_verification_attempts",
+            "max_search_requests", "max_extract_requests", "search_max_results",
+            "network_max_response_bytes", "max_web_document_chars", "max_web_storage_chars", "web_chunk_chars",
         )
         for name in integers:
             value = getattr(self, name)
@@ -64,6 +78,10 @@ class Config:
                 raise ValueError(f"{name} must be a positive integer")
         if self.max_output_chars < 128:
             raise ValueError("max_output_chars must be at least 128")
+        if self.network_enabled and self.max_output_chars < 4096:
+            raise ValueError("network tools require max_output_chars >= 4096")
+        if self.search_max_results > 10:
+            raise ValueError("search_max_results must be <= 10")
         if type(self.max_model_repairs) is not int or not 0 <= self.max_model_repairs <= 10:
             raise ValueError("max_model_repairs must be between 0 and 10")
         if self.completion_token_parameter not in {"max_tokens", "max_completion_tokens"}:
@@ -72,7 +90,8 @@ class Config:
             raise ValueError("max_retries must be between 0 and 10")
         for name in ("total_timeout_seconds", "request_timeout_seconds",
                      "tool_timeout_seconds", "retry_base_seconds",
-                     "approval_timeout_seconds", "shell_timeout_seconds"):
+                     "approval_timeout_seconds", "shell_timeout_seconds", "search_timeout_seconds",
+                     "extract_timeout_seconds"):
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be positive and finite")

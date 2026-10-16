@@ -19,6 +19,7 @@ from .processes import TerminationUnconfirmed
 from .shell import ShellTools
 from .recovery import Recovery, REPAIRABLE_MODEL_ERRORS
 from .verification import verify
+from .search import NetworkTools, check_public_dns
 
 T = TypeVar("T")
 LIVE_CHECK_TASK = "先调用 add_integers 计算 47+58，再把工具返回值交给 multiply_integers 乘以 3，报告最终结果。"
@@ -36,7 +37,8 @@ class Halt(Exception):
 
 class Runner:
     def __init__(self, config: Config, model: Model, *, tools: Tools | None = None,
-                 secrets: tuple[str, ...] = (), approve=None, phase=None):
+                 secrets: tuple[str, ...] = (), approve=None, phase=None,
+                 network_transport=None, network_dns_check=check_public_dns):
         config.validate()
         self.config, self.model = config, model
         self.tools = tools if tools is not None else CoreTools()
@@ -44,6 +46,7 @@ class Runner:
         self.approve = approve
         self.phase = phase if phase is not None else lambda value: None
         self.termination_unconfirmed = False
+        self.network_transport, self.network_dns_check = network_transport, network_dns_check
 
     async def run(self, task: str, workspace: Path,
                   cancel: asyncio.Event | None = None, *, store: RunStore | None = None) -> dict:
@@ -54,7 +57,13 @@ class Runner:
             raise ValueError("workspace must be a directory")
         cancel = cancel if cancel is not None else asyncio.Event()
         config = self.config
+        network_key = os.environ.get("TAVILY_API_KEY", "")
         store = store if store is not None else RunStore(Path(config.runs_dir).resolve(), self.secrets)
+        if network_key and network_key not in store.secrets:
+            store.secrets += (network_key,)
+        network = NetworkTools(self.tools, config, store, network_key,
+                               transport=self.network_transport, dns_check=self.network_dns_check)
+        network.save()
         started = time.monotonic()
         deadline = started + config.total_timeout_seconds
         turns = 0
@@ -127,6 +136,7 @@ class Runner:
                 "unresolved": ((context.memory["unresolved"] if context else [])
                                + list(recovery.unresolved.values()) if recovery else []),
                 "unfinished_steps": [step for step in context.plan if step["status"] != "completed"] if context else [],
+                "network": network.summary(), "citation_check": network.citation_check(answer),
                 "completion_scope": "Only configured checks are verified." if status == Status.COMPLETED else
                                     "No verified completion; consult checks and unfinished work.",
             })
@@ -151,8 +161,11 @@ class Runner:
             if result is None:
                 try:
                     timeout = (config.approval_timeout_seconds + config.shell_timeout_seconds + 1
-                               if call.name == "run_command" and self.approve else config.tool_timeout_seconds)
-                    result = await controlled(run_tools.execute(call), timeout, "tool_timeout")
+                               if call.name == "run_command" and self.approve else
+                               config.search_timeout_seconds if call.name == "web_search" else
+                               config.extract_timeout_seconds if call.name == "read_webpage" else config.tool_timeout_seconds)
+                    result = await controlled(run_tools.execute(call), timeout,
+                                              "network_timeout" if call.name in {"web_search", "read_webpage"} else "tool_timeout")
                 except TerminationUnconfirmed:
                     self.termination_unconfirmed = True
                     raise Halt(Status.FAILED, "process_termination_unconfirmed") from None
@@ -189,14 +202,15 @@ class Runner:
             store.emit("rules_loaded", **rules)
             context = TaskContext(task, rules, store, config.max_state_chars)
             store.write_json("state.json", context.snapshot())
-            core = (ShellTools(workspace, config, self.approve, store.emit, cancel, self.tools)
-                    if self.approve else self.tools)
+            core = (ShellTools(workspace, config, self.approve, store.emit, cancel, network)
+                    if self.approve else network)
             run_tools = RunTools(core, files, context)
             recovery = Recovery(files)
             for turn in range(1, config.max_turns + 1):
                 check()
                 turns = turn
                 messages, dropped = context.assemble(history, config.recent_history_turns)
+                messages.insert(1, {"role": "system", "content": network.prompt()})
                 if checks:
                     messages.insert(1, {"role": "system", "content": "Operator-configured verification checks: "
                         + json.dumps(checks, ensure_ascii=False) + ". On your final answer the executor runs these checks. "

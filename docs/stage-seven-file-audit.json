@@ -1,0 +1,174 @@
+{
+  "files": [
+    {
+      "path": ".env.example",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "HARNESS_MVP_IMPLEMENTATION_PLAN.md",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "README.md",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "config.example.json",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "docs/MVP_DELIVERY.md",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "docs/STAGE_SEVEN_ACCEPTANCE.md",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "docs/STAGE_SEVEN_DESIGN.md",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "docs/stage-seven-checks.json",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "docs/stage-seven-first-attempt.json",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "docs/stage-seven-live.json",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "docs/stage-seven-tests.txt",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "harness/config.py",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "harness/runner.py",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "harness/search.py",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "harness/static/app.js",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "harness/static/index.html",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "harness/web.py",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "tests/live_stage_seven.py",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "tests/stage_seven_checks.py",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "tests/test_stage_seven.py",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    },
+    {
+      "path": "tests/test_web_ui.js",
+      "utf8": true,
+      "bom": false,
+      "cr": false,
+      "final_lf": true,
+      "known_keys_absent": true
+    }
+  ],
+  "passed": true,
+  "own_format": "UTF-8 without BOM, LF; checked again after writing"
+}

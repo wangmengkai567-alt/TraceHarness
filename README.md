@@ -2,9 +2,9 @@
 
 已实现 Python 的最小运行核心：任务 → 模型 → 受控工具 → 反馈 → 终态。模型使用 OpenAI 兼容的 Chat Completions 工具协议，模型及服务地址由用户配置。
 
-包含配置、有限请求重试、运行预算、取消和事件记录，以及根目录 `AGENTS.md` 冻结快照、可调整计划、带来源的任务记忆、受限上下文和工作目录内的文本文件工具。已加入本地 Web 任务工作台、执行轨迹、取消、逐条真实 Shell 审批及 Windows 进程树控制；尚无 Tavily 工具。
+包含配置、有限请求重试、运行预算、取消和事件记录，以及根目录 `AGENTS.md` 冻结快照、可调整计划、带来源的任务记忆、受限上下文和工作目录内的文本文件工具。已加入本地 Web 任务工作台、执行轨迹、取消、逐条真实 Shell 审批及 Windows 进程树控制；阶段七新增 Tavily 联网搜索、网页正文提取、长文分段续读与来源追溯，默认关闭，启用方法见下文。
 
-阶段一至六已完成，含失败恢复、配置检查及真实浏览器端到端验收。首次使用建议阅读 [交付与复现指南](docs/MVP_DELIVERY.md)，最终证据见 [阶段六验收](docs/STAGE_SIX_ACCEPTANCE.md)。
+阶段一至七已完成，含失败恢复、配置检查、联网正文读取及真实模型端到端验收。首次使用建议阅读 [交付与复现指南](docs/MVP_DELIVERY.md)，核心 MVP 证据见 [阶段六验收](docs/STAGE_SIX_ACCEPTANCE.md)，联网证据见 [阶段七验收](docs/STAGE_SEVEN_ACCEPTANCE.md)。
 
 阶段三使用方法与验收见 [阶段三验收](docs/STAGE_THREE_ACCEPTANCE.md)，架构与接口边界见 [阶段三设计](docs/STAGE_THREE_DESIGN.md)。阶段二记录保留于 [阶段二验收](docs/STAGE_TWO_ACCEPTANCE.md)。
 
@@ -35,7 +35,7 @@ python -m pip install -r requirements.txt
 conda run -n harness python -m harness run --env-file .env --task "使用工具计算 47+58，再把结果乘以3。"
 ```
 
-阶段一工具为 `add_integers` 和 `multiply_integers`，执行真实整数运算，校验参数且不使用 eval。它们继续用于验证真实 LLM → 工具 → 结果反馈 → 后续调用的闭环。阶段二新增文件工具；尚无联网工具。
+阶段一工具为 `add_integers` 和 `multiply_integers`，执行真实整数运算，校验参数且不使用 eval。它们继续用于验证真实 LLM → 工具 → 结果反馈 → 后续调用的闭环。阶段二新增文件工具；阶段七新增可选联网工具。
 
 ## 配置真实模型
 
@@ -49,7 +49,7 @@ cp .env.example .env
 - `HARNESS_BASE_URL`：所选服务的 API 基础地址，不包含 `/chat/completions`。程序不预设供应商地址，不替你选择区域或服务。
 - `HARNESS_MODEL`：服务实际接受的模型标识。本机阶段六验收使用 `qwen3.8-flash`；请按自己的端点填写实际 API 标识，样例值不保证所有供应商适用。
 - `HARNESS_API_KEY`：本地密钥，不发送到聊天，不写入 JSON 配置。
-- `TAVILY_API_KEY`：为后续搜索工具预留；阶段一不会使用。
+- `TAVILY_API_KEY`：联网搜索与网页正文提取密钥；同时设置 JSON 中 `network_enabled=true` 才启用。
 
 执行真实工具闭环验收：
 
@@ -65,7 +65,7 @@ python -m harness live-check --env-file .env --config config.example.json
 python -m harness run --env-file .env --task "先用工具计算47+58，再用返回值乘以3，报告结果。"
 ```
 
-`run` 必须显式提供 `--task`，没有预置业务任务或模拟 provider。文件任务使用 `--workspace <目录>` 指定边界；联网搜索尚未接入，真实 shell 仅在 Web 审批下开放。
+`run` 必须显式提供 `--task`，没有预置业务任务或模拟 provider。文件任务使用 `--workspace <目录>` 指定边界；联网工具在 CLI 和 Web 中均可启用，真实 shell 仅在 Web 审批下开放。
 
 配置优先级：命令行覆盖项 > 现有进程环境 > 显式 `.env` > JSON 配置 > 默认值。不会自动寻找父目录 `.env`；需传入 `--env-file`。JSON 使用 `config.example.json` 中的字段，未知字段（包括密钥字段）会被拒绝。
 
@@ -204,3 +204,31 @@ python -m tests.live_stage_six
 通用知识问答可直接回答，不要求先查工作目录。模型每轮会收到剩余轮数提示；`max_turns` 的最后一轮专用于最终答复，不执行工具，不增加预算外的请求。默认 8 轮因此包含最多 7 轮工具交互和 1 轮收尾；配置为 1 轮时只能直接回答。重试仍计入 `max_model_calls`，总时长与取消继续生效。
 
 页面显示轮数上限和可读停止原因。`turn_limit` 表示达到交互轮数上限且未收到有效最终答复，计划标记 completed 或记忆声称“已回答”不能替代答案；历史失败不会自动重跑或变为成功。修复记录见 [问答轮数耗尽修复](docs/TURN_LIMIT_FIX.md)。已启动的服务需重启后加载后端修改。
+
+## 阶段七联网搜索与网页正文读取
+
+在本机 `.env` 配置 `TAVILY_API_KEY`，将启动使用的 JSON 配置中 `network_enabled` 改为 `true`，重启服务。样例配置默认关闭联网；缺少密钥时工具不可用并明确提示，不回退成虚构搜索。
+
+```powershell
+python -m harness serve --env-file .env --config config.example.json
+# 同样支持 CLI：先在配置中启用联网
+python -m harness run --env-file .env --config config.example.json --task "搜索 HTTPX 官方 timeouts 文档，读取正文后解释四种超时，引用来源。"
+```
+
+启用表示允许模型在运行预算内自动调用联网工具，搜索词和待读网址会发送给 Tavily，并产生相应 API 用量。Shell 仍逐条审批。不要在查询中放入无关私密材料。
+
+- `web_search` 找到网页并返回标题、链接、简短摘要和来源编号；详细结论应继续读取正文。
+- `read_webpage` 可直接接受用户指定的网址，提取文章或文档正文；长文通过文档编号与 `next_offset` 连续读取，同一任务续读使用保存版本，不重复抓取。
+- “工具调用”页签显示网络来源、链接、时间、保存长度、已读范围和完整性说明。抓取成功、读到末段、读完保存正文分别有证据，均不保证原网页绝对完整。登录、验证码、浏览器交互和 PDF 不在保证范围内。
+- 运行目录新增 `sources.json` 与 `web-D<n>.json`，保留提取正文及已读范围；最终 `result.json` 包含来源和引用编号检查。引用编号存在不等于事实已核实，无配置检查仍为 `unverified`。
+
+默认最多实际搜索 5 次、提取 10 次，重试占用请求预算；单次工具时限分别 30 秒、45 秒，服从任务总时限与取消。每份正文最多保存 20 万字符，累计最多 50 万字符，单段最多 4000 字符；超限明确截断或拒绝。长任务可增加 `max_turns`（例如 18）和总时限，为多次续读及最终回答留出预算。
+
+```powershell
+# 自动化检查，包含全部工程回归、页面脚本与依赖检查；需要 node 可用
+python -m tests.stage_seven_checks
+# 真实模型 + Tavily，自动启动和清理独立测试服务，会产生外部 API 用量
+python -m tests.live_stage_seven
+```
+
+详情见 [阶段七设计](docs/STAGE_SEVEN_DESIGN.md) 和 [阶段七验收](docs/STAGE_SEVEN_ACCEPTANCE.md)。网络目标由 Tavily 抓取；本地网址和 DNS 预检不能保证第三方实际连接与重定向路径，项目没有绕过这些检查的直连抓取后备通道。

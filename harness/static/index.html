@@ -20,7 +20,7 @@
           <label for="workspace">工作目录</label><input id="workspace" required placeholder="已有目录的绝对路径" autocomplete="off">
           <label for="task">任务要求 <span class="required">*</span></label><textarea id="task" rows="7" required placeholder="希望 Agent 帮你完成什么？&#10;&#10;描述目标、相关材料和期望的结果…"></textarea><div id="task-count" class="field-counter">0 字</div>
           <div class="config-label">运行方式</div><div class="config-value"><span aria-hidden="true">◇</span> 本地单体 · 单任务运行</div>
-          <details class="advanced-options"><summary>配置与运行说明</summary><p>模型及预算使用服务启动配置。文件访问限制在工作目录；关闭页面不会取消运行。</p><p>审批演练不调用模型，不执行真实命令。</p></details>
+          <details class="advanced-options"><summary>配置与运行说明</summary><p>模型及预算使用服务启动配置。文件访问限制在工作目录；关闭页面不会取消运行。</p><p id="network-notice">联网默认关闭；启用后搜索词和待读网址会发送给 Tavily。</p><p>审批演练不调用模型，不执行真实命令。</p></details>
           <button id="start" type="submit" class="primary full"><span aria-hidden="true">▶</span>开始运行任务</button>
           <button id="demo" type="button" class="quiet full">模拟审批演练</button>
         </form>
@@ -42,7 +42,7 @@
           <div id="panel-answer" class="tab-panel answer-panel" role="tabpanel" aria-labelledby="tab-answer"><div class="answer-toolbar"><span id="answer-label" class="eyebrow">运行结果</span><button id="copy-answer" class="outline compact" type="button" disabled>▢ 复制</button></div><article id="answer" class="answer-content"><div class="answer-empty"><span class="empty-orbit" aria-hidden="true">⌁</span><h2>让想法成为结果</h2><p>在左侧描述你的任务。运行后，<br>回答、产物与执行过程会在这里呈现。</p></div></article><div class="verification-note"><span aria-hidden="true">◇</span><p id="verification">完成状态由配置检查的实际结果决定；无检查时为未验证。</p></div><div id="completion-report"></div></div>
           <div id="panel-files" class="tab-panel" role="tabpanel" aria-labelledby="tab-files" hidden><div class="panel-intro"><h2>生成文件</h2><p>成功写入的文件及当时的哈希证据。</p></div><ul id="artifacts" class="artifact-list"><li class="empty-note">暂无产物</li></ul><p class="muted">文件之后可能被外部修改，以工作目录中的实际内容为准。</p></div>
           <div id="panel-trace" class="tab-panel" role="tabpanel" aria-labelledby="tab-trace" hidden><div class="panel-intro"><h2>执行轨迹 <span id="event-count" class="count-label">0 条事件</span></h2><p>按序号记录完整过程，展开查看参数与反馈。</p></div><p class="bounded-note">页面最多保留最近 300 条详情，完整事件保存在本地日志。</p><div id="events" class="event-details"></div></div>
-          <div id="panel-tools" class="tab-panel" role="tabpanel" aria-labelledby="tab-tools" hidden><div class="panel-intro"><h2>工具调用</h2><p>查看工具参数、返回结果和执行错误。</p></div><div id="tool-events" class="event-details"></div><p id="tools-empty" class="empty-note">本次运行尚无工具调用</p></div>
+          <div id="panel-tools" class="tab-panel" role="tabpanel" aria-labelledby="tab-tools" hidden><div class="panel-intro"><h2>工具调用</h2><p>查看工具参数、返回结果和执行错误。</p></div><div id="web-sources"></div><div id="tool-events" class="event-details"></div><p id="tools-empty" class="empty-note">本次运行尚无工具调用</p></div>
           <div id="panel-context" class="tab-panel" role="tabpanel" aria-labelledby="tab-context" hidden><div class="panel-intro"><h2>项目上下文</h2><p>本次使用的规范快照、任务记忆与运行配置。</p></div><details class="context-details" open><summary>项目规范 · AGENTS.md</summary><p id="rules-version" class="muted">尚未加载</p><pre id="rules">暂无记录</pre></details><details class="context-details"><summary>任务内记忆</summary><pre id="memory">暂无记录</pre></details><details class="context-details"><summary>任务与配置快照</summary><pre id="metadata">暂无记录</pre><p id="run-limits" class="muted"></p></details></div>
         </section>
         <aside class="inspector-column">

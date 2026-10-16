@@ -285,6 +285,7 @@ class RunManager:
                     "cancelling" if live and active.cancel.is_set() else active.status if live else "interrupted"),
                 "metadata": metadata, "state": state, "rules": read_json(folder / "rules.json"),
                 "result": result, "artifacts": list(artifacts.values()),
+                "network": read_json(folder / "sources.json", {}),
                 "checks": {"verified": bool(result and result.get("verified")),
                            "evidence": result.get("checks", []) if result else [],
                            "note": ("仅所配置检查项通过，不代表全部需求已验证。" if result and result.get("verified") else
@@ -385,7 +386,9 @@ def create_app(manager: RunManager, port: int = 8765) -> FastAPI:
 
     @app.get("/api/session")
     async def session():
-        return {"token": token, "default_workspace": str(Path.cwd())}
+        return {"token": token, "default_workspace": str(Path.cwd()),
+                "network_enabled": manager.config.network_enabled,
+                "network_available": manager.config.network_enabled and bool(os.environ.get("TAVILY_API_KEY"))}
 
     @app.api_route("/{path:path}", methods=["GET", "POST"])
     async def route(request: Request, path: str):
