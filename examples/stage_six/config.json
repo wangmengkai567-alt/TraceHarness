@@ -1,0 +1,13 @@
+{
+  "max_turns": 16,
+  "max_model_calls": 24,
+  "max_completion_tokens": 2048,
+  "recent_history_turns": 4,
+  "total_timeout_seconds": 480,
+  "approval_timeout_seconds": 120,
+  "shell_timeout_seconds": 30,
+  "checks": [
+    {"id": "summary_source", "type": "file_contains", "path": "summary.txt", "text": "来源：input.txt"},
+    {"id": "exact_summary", "type": "shell", "command": "python verify.py", "timeout_seconds": 15}
+  ]
+}

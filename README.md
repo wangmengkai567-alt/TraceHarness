@@ -1,8 +1,10 @@
-# AI Agent Harness MVP — 阶段五
+# AI Agent Harness MVP
 
 已实现 Python 的最小运行核心：任务 → 模型 → 受控工具 → 反馈 → 终态。模型使用 OpenAI 兼容的 Chat Completions 工具协议，模型及服务地址由用户配置。
 
 包含配置、有限请求重试、运行预算、取消和事件记录，以及根目录 `AGENTS.md` 冻结快照、可调整计划、带来源的任务记忆、受限上下文和工作目录内的文本文件工具。已加入本地 Web 任务工作台、执行轨迹、取消、逐条真实 Shell 审批及 Windows 进程树控制；尚无 Tavily 工具。
+
+阶段一至六已完成，含失败恢复、配置检查及真实浏览器端到端验收。首次使用建议阅读 [交付与复现指南](docs/MVP_DELIVERY.md)，最终证据见 [阶段六验收](docs/STAGE_SIX_ACCEPTANCE.md)。
 
 阶段三使用方法与验收见 [阶段三验收](docs/STAGE_THREE_ACCEPTANCE.md)，架构与接口边界见 [阶段三设计](docs/STAGE_THREE_DESIGN.md)。阶段二记录保留于 [阶段二验收](docs/STAGE_TWO_ACCEPTANCE.md)。
 
@@ -45,7 +47,7 @@ cp .env.example .env
 
 - `HARNESS_PROVIDER=openai_compatible`
 - `HARNESS_BASE_URL`：所选服务的 API 基础地址，不包含 `/chat/completions`。程序不预设供应商地址，不替你选择区域或服务。
-- `HARNESS_MODEL`：服务实际接受的模型标识。样例保留你提出的 `Qwen-3.8-flash`，其可用性及准确 API 标识尚未验证。
+- `HARNESS_MODEL`：服务实际接受的模型标识。本机阶段六验收使用 `qwen3.8-flash`；请按自己的端点填写实际 API 标识，样例值不保证所有供应商适用。
 - `HARNESS_API_KEY`：本地密钥，不发送到聊天，不写入 JSON 配置。
 - `TAVILY_API_KEY`：为后续搜索工具预留；阶段一不会使用。
 
@@ -181,7 +183,21 @@ python -m tests.live_stage_three --run-id <run-id>
 
 页面区分指定检查通过、未验证、检查失败、执行失败、取消、预算耗尽和中断，答复下方可展开检查证据、操作/产物清单及未完成事项；原始报告在 result.json。completed 仅表示配置项通过，不能推广为所有需求都已验证。
 
-详见 [阶段五设计](docs/STAGE_FIVE_DESIGN.md)、[阶段五验收](docs/STAGE_FIVE_ACCEPTANCE.md)。运行 `python -m tests.live_stage_five` 可复现固定失败→模型修正→重新审批→通过的真实模型验收，会产生 API 用量。阶段六整体验收未自动开始。
+详见 [阶段五设计](docs/STAGE_FIVE_DESIGN.md)、[阶段五验收](docs/STAGE_FIVE_ACCEPTANCE.md)。运行 `python -m tests.live_stage_five` 可复现固定失败→模型修正→重新审批→通过的真实模型验收，会产生 API 用量。
+
+## 阶段六完整样例
+
+样例位于 `examples/stage_six/`，包含规范、材料、任务、配置与精确字节检查脚本。复制到独立工作目录后，从 Web 提交 task.txt，依次批准两次 `python verify.py`，查看计划、记忆、摘要、检查证据与最终答案。手工启动命令见交付指南。
+
+```powershell
+# 完整工程回归：含真实 HTTP 服务硬退出/重启测试，不调用外部模型
+python -m unittest discover -s tests -v
+node tests/test_web_ui.js
+# 完整真实模型任务，经正常 HTTP API；仅批准固定样例命令，会产生模型用量
+python -m tests.live_stage_six
+```
+
+真实模型脚本结束后自动停止自己启动的服务并确认 PID/端口释放；报告在 `docs/stage-six-live.json`，原始日志和产物在报告指定的本机 `runs` 子目录。实际浏览器验证另有最终截图与刷新恢复记录，详见阶段六验收。模型表现可能波动，保留失败尝试，不把检查通过推广为通用可靠性或沙箱保证。
 
 ## 问答与轮数预算
 

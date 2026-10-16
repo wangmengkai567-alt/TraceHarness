@@ -1,0 +1,53 @@
+{
+  "platform": "Windows-10-10.0.19045-SP0",
+  "python": "3.12.15 | packaged by Anaconda, Inc. | (main, Oct  1 2026, 20:14:50) [MSC v.1942 64 bit (AMD64)]",
+  "interpreter": "D:\\Anaconda\\envs\\harness\\python.exe",
+  "dependencies": {
+    "httpx": "0.28.1",
+    "python-dotenv": "1.2.4",
+    "fastapi": "0.143.1",
+    "uvicorn": "0.54.0"
+  },
+  "commands": [
+    {
+      "command": [
+        "D:\\Anaconda\\envs\\harness\\python.exe",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-v"
+      ],
+      "exit_code": 0,
+      "test_count": 112,
+      "elapsed_seconds": 75.2
+    },
+    {
+      "command": [
+        "node",
+        "tests/test_web_ui.js"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "D:\\Anaconda\\envs\\harness\\python.exe",
+        "-m",
+        "pip",
+        "check"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "D:\\Anaconda\\envs\\harness\\python.exe",
+        "-m",
+        "harness",
+        "--help"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "passed": true
+}

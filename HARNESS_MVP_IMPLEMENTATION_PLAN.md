@@ -4,7 +4,7 @@
 
 日期：2026-10-14
 
-状态：阶段一至五已交付；阶段五已完成有限失败恢复、配置结果检查、终态报告及真实模型失败后修正验收，详见 docs/STAGE_FIVE_ACCEPTANCE.md；阶段六尚未开始。
+状态：阶段一至六已交付；阶段六完成真实浏览器完整任务、逐次 Shell 审批、刷新恢复、真实 HTTP 异常/重启测试及最终交付文档，详见 docs/STAGE_SIX_ACCEPTANCE.md。下一迭代仍须先验收隔离能力，才讨论自主 Shell。
 
 ## 1. 目标与范围
 
@@ -181,3 +181,5 @@
 阶段四交付与限制见 `docs/STAGE_FOUR_DESIGN.md`、`docs/STAGE_FOUR_ACCEPTANCE.md`；真实 shell 仅在 Web 审批代理下开放，普通 CLI 不提供 shell。
 
 阶段五交付与限制见 `docs/STAGE_FIVE_DESIGN.md`、`docs/STAGE_FIVE_ACCEPTANCE.md`；配置 checks 后执行指定检查，失败可在剩余预算内修正，无检查仍为 unverified。
+
+阶段六交付见 `docs/STAGE_SIX_ACCEPTANCE.md`、`docs/MVP_DELIVERY.md`、`examples/stage_six/`；真实模型完整任务复现入口为 `python -m tests.live_stage_six`。
