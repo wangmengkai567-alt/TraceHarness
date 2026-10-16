@@ -1,234 +1,156 @@
-# AI Agent Harness MVP
+# AI Agent Harness
 
-已实现 Python 的最小运行核心：任务 → 模型 → 受控工具 → 反馈 → 终态。模型使用 OpenAI 兼容的 Chat Completions 工具协议，模型及服务地址由用户配置。
+基于 Python 的本地 AI Agent 运行框架，支持通过 Web 工作台或命令行提交任务，让模型在受控工具、运行预算和结果检查下完成工作。
 
-包含配置、有限请求重试、运行预算、取消和事件记录，以及根目录 `AGENTS.md` 冻结快照、可调整计划、带来源的任务记忆、受限上下文和工作目录内的文本文件工具。已加入本地 Web 任务工作台、执行轨迹、取消、逐条真实 Shell 审批及 Windows 进程树控制；阶段七新增 Tavily 联网搜索、网页正文提取、长文分段续读与来源追溯，默认关闭，启用方法见下文。
+```text
+任务 → 模型决策 → 工具执行 → 结果反馈 → 后续决策 → 最终答复与检查
+```
 
-阶段一至七已完成，含失败恢复、配置检查、联网正文读取及真实模型端到端验收。首次使用建议阅读 [交付与复现指南](docs/MVP_DELIVERY.md)，核心 MVP 证据见 [阶段六验收](docs/STAGE_SIX_ACCEPTANCE.md)，联网证据见 [阶段七验收](docs/STAGE_SEVEN_ACCEPTANCE.md)。
+## 功能
 
-阶段三使用方法与验收见 [阶段三验收](docs/STAGE_THREE_ACCEPTANCE.md)，架构与接口边界见 [阶段三设计](docs/STAGE_THREE_DESIGN.md)。阶段二记录保留于 [阶段二验收](docs/STAGE_TWO_ACCEPTANCE.md)。
+- **任务执行**：接入 OpenAI 兼容的 Chat Completions 接口，支持工具调用、有限重试、超时和取消。
+- **上下文管理**：加载工作目录根部的 `AGENTS.md`，维护可调整计划、带来源的任务记忆和近期交互历史。
+- **文件操作**：读写工作目录内的 UTF-8 文本，以文件哈希检测写入冲突，保留已有编码与换行风格。
+- **命令审批**：Web 中逐条批准 Shell 命令，支持执行超时、取消与 Windows 进程树清理。
+- **联网读取**：可选 Tavily 搜索与网页正文提取，支持长文分段续读和来源追溯。
+- **检查与追踪**：配置结果检查，失败后反馈模型修正；保存完整事件、工具反馈和最终报告。
 
-## 启动
+技术栈：Python 3.12、asyncio、FastAPI、HTTPX、原生 HTML/CSS/JavaScript。Python 后端同时提供页面和 API。
 
-本项目使用 **conda** 管理环境，环境名称为 `harness`，Python 3.12。克隆仓库后，先进入仓库根目录，再在已初始化 conda 的 PowerShell 或 Anaconda Prompt 中运行：
+## 快速开始
 
-环境使用 conda 加源码直接运行；本次检查在已有 harness conda 环境执行。程序仅使用真实 LLM，没有 demo 模型或离线兜底。
+以下命令在仓库根目录、已初始化 conda 的 PowerShell 中执行。
+
+### 1. 安装环境
 
 ```powershell
 conda env create -f environment.yml
 conda activate harness
-# 接下来填写本机 .env，按下节命令运行真实模型。
 ```
 
-`environment.yml` 创建 conda 环境，并通过该环境内的 pip 读取 `requirements.txt`、安装运行依赖。
+已有 `harness` 环境时，激活后运行 `python -m pip install -r requirements.txt` 更新依赖即可。
 
-若环境已创建，无需重复创建；激活后可更新运行依赖：
+### 2. 配置模型
+
+首次使用时复制配置模板，已有 `.env` 请保留：
 
 ```powershell
-conda activate harness
-python -m pip install -r requirements.txt
+if (-not (Test-Path -LiteralPath .env)) {
+    Copy-Item -LiteralPath .env.example -Destination .env
+}
 ```
 
-未激活环境时，也可明确指定 conda 环境运行：
+在本机 `.env` 中填写：
+
+```dotenv
+HARNESS_PROVIDER=openai_compatible
+HARNESS_BASE_URL=你的 API 基础地址
+HARNESS_MODEL=服务实际支持的模型标识
+HARNESS_API_KEY=你的 API 密钥
+```
+
+`HARNESS_BASE_URL` 不包含 `/chat/completions`，远程端点需使用 HTTPS。密钥只保存在本机，不写入 JSON 配置或提交到仓库。
+
+### 3. 启动 Web 工作台
 
 ```powershell
-conda run -n harness python -m harness run --env-file .env --task "使用工具计算 47+58，再把结果乘以3。"
+python -m harness serve --env-file .env --config config.example.json
 ```
 
-阶段一工具为 `add_integers` 和 `multiply_integers`，执行真实整数运算，校验参数且不使用 eval。它们继续用于验证真实 LLM → 工具 → 结果反馈 → 后续调用的闭环。阶段二新增文件工具；阶段七新增可选联网工具。
+打开终端给出的地址，默认是 `http://127.0.0.1:8765`。填写已有工作目录和任务后即可运行，页面提供回答、产物、计划、工具轨迹和命令审批。可用 `--port 8766` 更换端口，请使用输出的精确地址，`localhost` 别名会被 Host 校验拒绝。
 
-## 配置真实模型
+刷新页面可恢复运行记录；关闭页面不会取消任务，请使用“取消运行”。停止服务使用 Ctrl+C，并等待活动任务及命令进程清理结束。
 
-复制 `.env.example` 为本机 `.env`:
+## 命令行使用
 
-cp .env.example .env
+运行任务：
 
-填写：
+```powershell
+python -m harness run --env-file .env --config config.example.json --task "先用工具计算47+58，再将返回值乘以3，报告结果。"
+```
 
-- `HARNESS_PROVIDER=openai_compatible`
-- `HARNESS_BASE_URL`：所选服务的 API 基础地址，不包含 `/chat/completions`。程序不预设供应商地址，不替你选择区域或服务。
-- `HARNESS_MODEL`：服务实际接受的模型标识。本机阶段六验收使用 `qwen3.8-flash`；请按自己的端点填写实际 API 标识，样例值不保证所有供应商适用。
-- `HARNESS_API_KEY`：本地密钥，不发送到聊天，不写入 JSON 配置。
-- `TAVILY_API_KEY`：联网搜索与网页正文提取密钥；同时设置 JSON 中 `network_enabled=true` 才启用。
+文件任务添加 `--workspace "你的工作目录"`。命令行支持文件和可选联网工具，Shell 命令及 Shell 检查通过 Web 审批执行。
 
-执行真实工具闭环验收：
+验证真实模型的工具调用闭环：
 
 ```powershell
 python -m harness live-check --env-file .env --config config.example.json
 ```
 
-`live-check` 调用真实接口，要求模型先使用工具计算 47+58，再把返回值乘以3，消费工具反馈后回答315。成功输出 `live_check_passed: true`；这验证工具闭环，不代表通用任务质量。缺少配置会报错，不会降级为模拟。
+成功时输出 `live_check_passed: true`。此命令调用真实模型，会产生 API 用量；配置缺失时明确报错。
 
-一般任务入口：
+## 配置
 
-```powershell
-python -m harness run --env-file .env --task "先用工具计算47+58，再用返回值乘以3，报告结果。"
+运行参数见 [config.example.json](config.example.json)，通过 `--config` 指定。模型连接信息优先使用已有进程环境，其次为显式加载的 `.env`、JSON 和默认值；不会自动寻找父目录的 `.env`。修改配置后需重启服务，新任务才会采用新值。
+
+常用默认值：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `max_turns` | 8 | 最后一轮保留给最终答复，不派发模型工具调用 |
+| `request_timeout_seconds` | 90 | 单次模型请求时限，单位秒 |
+| `total_timeout_seconds` | 360 | 任务总时限，包含工具、审批及重试等待 |
+| `approval_timeout_seconds` / `shell_timeout_seconds` | 60 / 60 | 审批等待和单条命令执行上限，单位秒 |
+| `recent_history_turns` | 4 | 保留近期完整交互组，规范、计划和任务记忆持续提供 |
+| `checks` | `[]` | 默认不配置结果检查 |
+| `network_enabled` | `false` | 默认关闭联网 |
+
+若模型服务要求 `max_completion_tokens` 参数，将 `completion_token_parameter` 改为 `"max_completion_tokens"`；生成上限数值由 `max_completion_tokens` 配置项控制。
+
+### 联网搜索与网页读取
+
+在本机 `.env` 中填写 `TAVILY_API_KEY`，将启动 JSON 的 `network_enabled` 改为 `true` 后重启。启用后，模型可在预算内调用 `web_search` 和 `read_webpage`；搜索词和待读网址会发送给 Tavily，并产生相应 API 用量。
+
+长正文按文档编号续读，不重复抓取。来源、保存正文和已读区间会落盘；提取成功或读完保存内容不保证原网页完整，引用编号存在也不等于事实已核实。登录、验证码、浏览器交互及 PDF 不在支持保证范围内。
+
+### 结果检查
+
+可在启动 JSON 中合并以下字段，为产物设置检查：
+
+```json
+{
+  "checks": [
+    {"id": "summary_source", "type": "file_contains", "path": "summary.txt", "text": "来源：input.txt"}
+  ]
+}
 ```
 
-`run` 必须显式提供 `--task`，没有预置业务任务或模拟 provider。文件任务使用 `--workspace <目录>` 指定边界；联网工具在 CLI 和 Web 中均可启用，真实 shell 仅在 Web 审批下开放。
+支持 `file_contains` 和 `shell` 两类检查。模型提出最终答复后，执行器运行配置检查；失败证据反馈模型，在剩余预算内修正。每次 Shell 检查均需独立审批。
 
-配置优先级：命令行覆盖项 > 现有进程环境 > 显式 `.env` > JSON 配置 > 默认值。不会自动寻找父目录 `.env`；需传入 `--env-file`。JSON 使用 `config.example.json` 中的字段，未知字段（包括密钥字段）会被拒绝。
+无检查时，正常结束为 `unverified`；全部配置检查通过为 `completed`；修正机会耗尽仍未通过为 `verification_failed`。其他终态包括执行失败、取消、预算耗尽和中断。检查通过仅表示配置项通过。
 
-默认 `completion_token_parameter` 为 `max_tokens`。若服务要求 `max_completion_tokens`，在 JSON 中切换此字段；参数数值由 `max_completion_tokens` 配置项控制。HTTP 400 不会自动反复试不同参数。
+## 运行记录
 
-默认单次模型请求时限为 90 秒，任务总时限为 360 秒，最多重试 2 次。当前使用非流式模型响应，单次时限覆盖等待完整答案的全过程，总时限还包含工具、重试等待及后续交互。自定义 JSON 中的时限优先于默认值；修改配置后需重启服务，新任务才会采用新值，已有任务记录保留原始配置。页面“配置与运行说明”显示所选任务实际使用的单次请求和总时限。
+每次任务保存在 `runs/<run-id>/`，包含配置和规范快照、最新计划与记忆、完整事件 `events.jsonl` 及最终报告 `result.json`。联网启用时还保存来源索引和提取正文。
 
-## 轨迹与取消
-
-每次运行生成 `runs/<run-id>/`：
-
-新任务 ID 使用服务所在电脑的本地日期加当日序号，例如 `20261015001`、`20261015002`，次日从 `20261016001` 开始。序号至少三位，超过 999 后继续为 1000。CLI 和 Web 共用同一规则，在同一个 `runs_dir` 内根据当天已有目录的最大序号继续分配，重启不重置；并发创建通过原子目录创建避免重号。失败或中断任务同样占用编号，请保留运行目录以维持编号连续性。既有 UUID 任务仍可查看，无需迁移。
-
-- `metadata.json`：任务、工作目录、配置快照、运行类型；不包含密钥。
-- `events.jsonl`：连续序号的请求、响应、工具反馈、错误和重试事件。
-- `result.json`：最终状态、答案、计划/记忆、用量（若模型提供）与耗时。
-- `rules.json`：根目录规范内容与原始字节 SHA256；下次运行才加载修改。
-- `state.json`：最新计划和任务内记忆；事件包含调整原因和历史。
+可在 Web 查看历史，或将下方示例编号替换为实际任务 ID：
 
 ```powershell
-python -m harness inspect <run-id> --events
+python -m harness inspect 20261016001 --events
 ```
 
-自定义了 `runs_dir` 时，查看命令传入 `--runs-dir <目录>`。运行目录相对于启动时的当前目录解析。
+自定义记录目录时添加 `--runs-dir "记录目录"`。历史记录用于查看；中断任务不自动续跑，也不复用旧审批。
 
-运行中按 Ctrl+C 发出取消信号：停止后续操作，取消等待中的请求/退避，并尽量保存取消终态。嵌入应用可向 `Runner.run` 传入 `asyncio.Event`。远端模型是否已消耗用量，不因客户端取消而得到保证。
-
-没有配置检查时，模型正常结束为 `unverified`。配置检查全部通过为 `completed`，修正机会耗尽仍失败为 `verification_failed`；其他终态为 `failed`、`cancelled`、`budget_exceeded`。没有终态文件的历史记录展示 `interrupted`；CLI 对 owner_pid 仍存活的记录显示 `running` 提示。不会误报完成或自动续跑。
-
-退出码：正常结束 0、执行失败/预算耗尽/闭环验收失败 1、配置或文件错误 2、用户取消 130。
-
-## 检查
+## 开发与测试
 
 ```powershell
-conda activate harness
 python -m unittest discover -s tests -v
+node tests/test_web_ui.js
 python -m pip check
 ```
 
-测试使用标准库 `unittest`。HTTP 集成测试使用真实本地 socket，但服务返回模拟响应，未连接真实 LLM。
+Python 测试使用 `unittest`，页面脚本测试需要 Node.js。这些检查不调用外部模型，部分测试会启动并清理本地服务和子进程。真实模型与完整样例的复现方式见 [交付与复现指南](docs/MVP_DELIVERY.md)。
 
-参考：[分阶段计划](HARNESS_MVP_IMPLEMENTATION_PLAN.md)、[阶段一设计](docs/STAGE_ONE_DESIGN.md)、[阶段一验收记录](docs/STAGE_ONE_ACCEPTANCE.md)。
+## 使用边界
 
-## 阶段二文件任务
+- 面向可信本地项目，单用户、单活动任务；服务仅监听 `127.0.0.1`，不支持远程公开部署或多 worker。
+- Shell 审批不提供沙箱隔离，批准的命令可访问工作目录外资源；命令结束会清理残余子进程，不支持启动常驻服务。
+- 文件工具默认处理不超过 64 KiB 的 UTF-8 文本；哈希和文件锁不能提供恶意外部修改下的完整事务保证。
+- 任务记忆限于本次运行；当前不支持跨任务长期记忆、断点续跑、嵌套规范或多 Agent。
+- 当前模型响应为非流式；轮数、时限及输入输出预算可能使任务提前结束。
 
-先准备独立工作目录，放入材料及可选的根目录 `AGENTS.md`。模型先用 `update_plan` 建立步骤，再调用 `list_files`、`read_file`、`write_file`，通过 `update_memory` 保留带来源的事实、推测和进度。
+## 文档
 
-```powershell
-python -m harness run --env-file .env --workspace examples/stage_two --task "读取 input.txt，记录发现并按 AGENTS.md 创建 summary.txt，读取产物核对并更新计划。"
-# 完整真实模型验收，复制样例到 runs 中，保留检查记录：
-python -m tests.live_stage_two
-```
-
-现有文件写入须提供读取时返回的 `sha256` 作为 `expected_hash`；新文件使用 null。文件默认最多 64 KiB，规则最多 16 KiB，目录最多 200 项；完整读取超限拒绝，工具输出过长明确标记 truncated。已有 UTF-8 BOM 与 LF/CRLF 保留，新文件 UTF-8 无 BOM、LF。更多编码、混合换行和大文件暂不支持。
-
-`config.example.json` 新增 `max_file_bytes`、`max_rules_bytes`、`max_directory_entries`、`recent_history_turns`、`max_state_chars`。默认保留最近 4 轮完整交互；规范、任务、计划和记忆始终进入输入，超过总输入预算明确结束。复杂任务可适当提高轮数和 completion token 上限；真实验收脚本使用 20 轮、4096 completion tokens。
-
-文件工具限制面向可信本地目录，不能替代沙箱；已有文件写入使用哈希冲突检测和文件锁，不能保证恶意外部修改下的无竞态事务。记录持久化不代表支持续跑。详细限制见阶段二设计文档。
-
-## 阶段三 Web 工作台
-
-激活 conda 环境、安装新增依赖并填写本机 `.env` 后启动：
-
-```powershell
-conda activate harness
-python -m pip install -r requirements.txt
-python -m harness serve --env-file .env --config config.example.json
-# 可用 --port 8766 更换端口
-```
-
-打开终端给出的 `http://127.0.0.1:8765`，填写已有工作目录及任务，点击“开始运行任务”。页面展示状态、规范快照、计划/调整原因、记忆、工具参数/反馈、模型回复、错误/重试、最终答案、产物与检查说明。长详情可展开，超限明确截断；日志与原始 HTML 始终按文本安全展示。
-
-当前 Harness Studio 界面采用任务配置、标签式结果区和右侧运行信息三栏布局。运行日志在独立的深色窗口内滚动，可暂停跟随、清空显示和查看详情；页面最多保留最近 300 条日志/轨迹节点，完整记录保存在本地。回答支持安全的基础 Markdown 排版。界面验证及截图见 [界面优化记录](docs/STUDIO_UI_REDESIGN.md)。
-
-“模拟审批演练”独立测试批准、拒绝、取消与时限，不调用模型，不执行真实命令或写工作目录。一次只能运行一个模型任务或演练。审批默认等待 60 秒，也受总时限约束；重复或失效决定由后端拒绝。
-
-刷新或重开页面可恢复所选轨迹，不会重复启动任务；历史运行可用下拉框切换。关闭页面不等于取消，需使用“取消运行”；界面先显示“正在取消”，等后端终态落盘后才显示“已取消”。停止服务用 Ctrl+C，后端通知活动任务取消。服务重启后请刷新页面获取新会话；没有终态的旧记录显示中断，不自动续跑或恢复审批。
-
-服务只绑定 127.0.0.1，请使用终端提供的精确地址（localhost 别名会被 Host 校验拒绝）。接口要求同源请求与会话 token，未开放 CORS、远程部署、账户或多 worker。运行时限和模型仍通过环境变量/JSON 配置，Web 不提供模型配置后台。
-
-```powershell
-# 服务运行时，通过 API 启动新的真实模型样例任务并验收：
-python -m tests.live_stage_three
-# 只复核已有记录，不发起新的模型调用：
-python -m tests.live_stage_three --run-id <run-id>
-```
-
-阶段三历史检查与真实 Web 模型样例及浏览器交互证据见阶段三验收。无配置检查时模型结束仍为 unverified；模型自检与计划 completed 不能替代执行器检查。阶段四新增真实 shell 与进程树控制，阶段五补齐有限失败恢复、配置检查与报告。
-
-## 阶段四 Shell
-
-通过上述 Web 启动命令运行，在可信项目任务中请求执行命令。模型调用 `run_command` 后，右侧审批卡展示命令、完整 argv、shell、工作目录和时限；核对后点击“批准执行此命令”或“拒绝”。每次调用、重试、检查命令均须独立审批。审批过期、取消和终态后不能批准；页面关闭不会自动批准。
-
-默认审批等待和单命令上限均为 60 秒，通过 JSON 的 `approval_timeout_seconds`、`shell_timeout_seconds` 调整。审批和执行共同计入任务总时限，普通工具仍使用 `tool_timeout_seconds`。Windows 固定使用系统 Windows PowerShell，非交互执行；结果保留 shell 退出码、有界输出与超时标识。命令结束后会清理剩余后台子进程，不支持启动常驻服务。
-
-超时、取消、服务正常关闭均先终止进程树并确认退出；终止未确认显示执行失败并阻止新任务，需人工检查后重启。Shell 不是沙箱，可访问工作目录以外资源，仅用于可信项目。普通 CLI 无审批入口，不提供 shell。
-
-设计与验收见 [阶段四设计](docs/STAGE_FOUR_DESIGN.md)、[阶段四验收](docs/STAGE_FOUR_ACCEPTANCE.md)。固定无害命令的真实模型验收可运行 `python -m tests.live_stage_four`；该脚本会调用配置的真实模型，产生 API 用量。
-
-## 阶段五 恢复与检查
-
-临时模型请求有限退避重试；格式错误允许有限修正，非法批次不执行。工具失败反馈模型，不自动重放写入或命令。相同操作连续失败达到上限停止；写入结果不确定时必须先读取文件，明确拒绝的相同命令本次运行不再审批。所有恢复继续消耗原运行预算。
-
-在启动用的 JSON 配置中添加 checks，例如以下文件检查（默认 checks=[]）：
-
-```json
-"checks": [
-  {"id": "summary_content", "type": "file_contains", "path": "summary.txt", "text": "来源：input.txt"}
-]
-```
-
-文件检查只能读取工作目录内、大小受限的 UTF-8 文本。也可配置 shell 检查：`{"id":"tests","type":"shell","command":"python -m unittest discover -s tests","timeout_seconds":30}`。每次检查命令均在 Web 请求独立审批，拒绝、超时和非零退出码都不能通过；CLI 没有审批代理，不能执行 shell 检查。Windows 返回实际 PowerShell 退出码，如需保留原生命令退出码，命令显式加 `; exit $LASTEXITCODE` 并一同审批。
-
-模型提出最终答复后，后端运行配置检查；失败证据反馈模型，在剩余预算内修正后可重新检查。默认 max_verification_attempts=2（含初次）、max_model_repairs=2、max_consecutive_failures=3、max_tool_calls=64。模型不能改写这些检查标准。配置文件更改后重启服务，新任务才采用新值。
-
-页面区分指定检查通过、未验证、检查失败、执行失败、取消、预算耗尽和中断，答复下方可展开检查证据、操作/产物清单及未完成事项；原始报告在 result.json。completed 仅表示配置项通过，不能推广为所有需求都已验证。
-
-详见 [阶段五设计](docs/STAGE_FIVE_DESIGN.md)、[阶段五验收](docs/STAGE_FIVE_ACCEPTANCE.md)。运行 `python -m tests.live_stage_five` 可复现固定失败→模型修正→重新审批→通过的真实模型验收，会产生 API 用量。
-
-## 阶段六完整样例
-
-样例位于 `examples/stage_six/`，包含规范、材料、任务、配置与精确字节检查脚本。复制到独立工作目录后，从 Web 提交 task.txt，依次批准两次 `python verify.py`，查看计划、记忆、摘要、检查证据与最终答案。手工启动命令见交付指南。
-
-```powershell
-# 完整工程回归：含真实 HTTP 服务硬退出/重启测试，不调用外部模型
-python -m unittest discover -s tests -v
-node tests/test_web_ui.js
-# 完整真实模型任务，经正常 HTTP API；仅批准固定样例命令，会产生模型用量
-python -m tests.live_stage_six
-```
-
-真实模型脚本结束后自动停止自己启动的服务并确认 PID/端口释放；报告在 `docs/stage-six-live.json`，原始日志和产物在报告指定的本机 `runs` 子目录。实际浏览器验证另有最终截图与刷新恢复记录，详见阶段六验收。模型表现可能波动，保留失败尝试，不把检查通过推广为通用可靠性或沙箱保证。
-
-## 问答与轮数预算
-
-通用知识问答可直接回答，不要求先查工作目录。模型每轮会收到剩余轮数提示；`max_turns` 的最后一轮专用于最终答复，不执行工具，不增加预算外的请求。默认 8 轮因此包含最多 7 轮工具交互和 1 轮收尾；配置为 1 轮时只能直接回答。重试仍计入 `max_model_calls`，总时长与取消继续生效。
-
-页面显示轮数上限和可读停止原因。`turn_limit` 表示达到交互轮数上限且未收到有效最终答复，计划标记 completed 或记忆声称“已回答”不能替代答案；历史失败不会自动重跑或变为成功。修复记录见 [问答轮数耗尽修复](docs/TURN_LIMIT_FIX.md)。已启动的服务需重启后加载后端修改。
-
-## 阶段七联网搜索与网页正文读取
-
-在本机 `.env` 配置 `TAVILY_API_KEY`，将启动使用的 JSON 配置中 `network_enabled` 改为 `true`，重启服务。样例配置默认关闭联网；缺少密钥时工具不可用并明确提示，不回退成虚构搜索。
-
-```powershell
-python -m harness serve --env-file .env --config config.example.json
-# 同样支持 CLI：先在配置中启用联网
-python -m harness run --env-file .env --config config.example.json --task "搜索 HTTPX 官方 timeouts 文档，读取正文后解释四种超时，引用来源。"
-```
-
-启用表示允许模型在运行预算内自动调用联网工具，搜索词和待读网址会发送给 Tavily，并产生相应 API 用量。Shell 仍逐条审批。不要在查询中放入无关私密材料。
-
-- `web_search` 找到网页并返回标题、链接、简短摘要和来源编号；详细结论应继续读取正文。
-- `read_webpage` 可直接接受用户指定的网址，提取文章或文档正文；长文通过文档编号与 `next_offset` 连续读取，同一任务续读使用保存版本，不重复抓取。
-- “工具调用”页签显示网络来源、链接、时间、保存长度、已读范围和完整性说明。抓取成功、读到末段、读完保存正文分别有证据，均不保证原网页绝对完整。登录、验证码、浏览器交互和 PDF 不在保证范围内。
-- 运行目录新增 `sources.json` 与 `web-D<n>.json`，保留提取正文及已读范围；最终 `result.json` 包含来源和引用编号检查。引用编号存在不等于事实已核实，无配置检查仍为 `unverified`。
-
-默认最多实际搜索 5 次、提取 10 次，重试占用请求预算；单次工具时限分别 30 秒、45 秒，服从任务总时限与取消。每份正文最多保存 20 万字符，累计最多 50 万字符，单段最多 4000 字符；超限明确截断或拒绝。长任务可增加 `max_turns`（例如 18）和总时限，为多次续读及最终回答留出预算。
-
-```powershell
-# 自动化检查，包含全部工程回归、页面脚本与依赖检查；需要 node 可用
-python -m tests.stage_seven_checks
-# 真实模型 + Tavily，自动启动和清理独立测试服务，会产生外部 API 用量
-python -m tests.live_stage_seven
-```
-
-详情见 [阶段七设计](docs/STAGE_SEVEN_DESIGN.md) 和 [阶段七验收](docs/STAGE_SEVEN_ACCEPTANCE.md)。网络目标由 Tavily 抓取；本地网址和 DNS 预检不能保证第三方实际连接与重定向路径，项目没有绕过这些检查的直连抓取后备通道。
+- [学习与源码对照指南](docs/GEN1_LEARNING_GUIDE.md)：架构、源码入口、练习与自测。
+- [交付与复现指南](docs/MVP_DELIVERY.md)：完整样例、运行方法和验收记录入口。
+- [设计与验收文档](docs/)：详细设计、开发记录及验证证据。
