@@ -8,3 +8,4 @@ __pycache__/
 runs/
 build/
 dist/
+docs/
