@@ -98,6 +98,8 @@ class OpenAICompatibleModel:
             return parse_reply(json.loads(body), self.config)
         except httpx.TimeoutException as exc:
             raise ModelError("model_request_timeout", retryable=True) from exc
+        except (httpx.UnsupportedProtocol, httpx.LocalProtocolError) as exc:
+            raise ModelError("model_transport_configuration_error") from exc
         except httpx.TransportError as exc:
             # Provider URLs, headers, and raw bodies are intentionally not logged.
             raise ModelError("model_transport_error", retryable=True) from exc

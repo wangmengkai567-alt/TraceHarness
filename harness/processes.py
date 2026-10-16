@@ -10,6 +10,31 @@ class TerminationUnconfirmed(Exception):
     pass
 
 
+def process_alive(pid: int) -> bool:
+    if os.name == "nt":
+        import ctypes as c
+        from ctypes import wintypes as w
+        k = c.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.argtypes, k.OpenProcess.restype = [w.DWORD, w.BOOL, w.DWORD], w.HANDLE
+        k.GetExitCodeProcess.argtypes = [w.HANDLE, c.POINTER(w.DWORD)]
+        k.CloseHandle.argtypes = [w.HANDLE]
+        handle = k.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return c.get_last_error() == 5  # Access denied does not establish process exit.
+        try:
+            code = w.DWORD()
+            return not k.GetExitCodeProcess(handle, c.byref(code)) or code.value == 259
+        finally:
+            k.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 class WindowsJob:
     def __init__(self):
         import ctypes as c

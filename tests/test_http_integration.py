@@ -87,11 +87,17 @@ class HTTPIntegrationTests(unittest.IsolatedAsyncioTestCase):
             cancel = asyncio.Event()
             task = asyncio.create_task(Runner(config, OpenAICompatibleModel(config, "dummy-key"))
                                        .run(LIVE_CHECK_TASK, Path(tmp), cancel))
-            await asyncio.wait_for(entered.wait(), 5)
-            cancel.set()
-            result = await asyncio.wait_for(task, 5)
-            await asyncio.wait_for(closed.wait(), 5)
-            self.assertEqual(result["status"], "cancelled")
+            try:
+                await asyncio.wait_for(entered.wait(), 15)
+                cancel.set()
+                result = await asyncio.wait_for(task, 5)
+                await asyncio.wait_for(closed.wait(), 5)
+                self.assertEqual(result["status"], "cancelled")
+            finally:
+                cancel.set()
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
 
 if __name__ == "__main__":

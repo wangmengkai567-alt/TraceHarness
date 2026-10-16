@@ -12,6 +12,7 @@ from .config import load_config
 from .models import OpenAICompatibleModel
 from .runner import LIVE_CHECK_TASK, Runner
 from .store import RUN_ID
+from .processes import process_alive
 
 
 def print_json(value) -> None:
@@ -103,8 +104,11 @@ def main(argv: list[str] | None = None) -> int:
                 print_json(json.loads(result.read_text(encoding="utf-8")))
             else:
                 metadata = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
-                print_json({"run_id": metadata["run_id"], "status": "no_terminal_result",
-                            "note": "Run may still be active or interrupted; stage one does not resume it."})
+                running = False
+                if type(metadata.get("owner_pid")) is int and metadata["owner_pid"] > 0:
+                    running = process_alive(metadata["owner_pid"])
+                print_json({"run_id": metadata["run_id"], "status": "running" if running else "interrupted",
+                            "note": "No terminal result. Never resume or replay commands; owner PID liveness is only a hint."})
             if args.events:
                 print((folder / "events.jsonl").read_text(encoding="utf-8"), end="")
             return 0
@@ -117,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
             print_json({"live_check_passed": passed,
                         "note": "This checks the real-model tool loop, not general task correctness."})
             return 0 if passed else 1
-        return 0 if result["status"] == "unverified" else (130 if result["status"] == "cancelled" else 1)
+        return 0 if result["status"] in {"completed", "unverified"} else (130 if result["status"] == "cancelled" else 1)
     except (ValueError, TypeError, OSError) as error:
         # Keep parsing/IO errors safe; selected validation messages are authored here.
         if type(error) is ValueError:

@@ -1,4 +1,4 @@
-# AI Agent Harness MVP — 阶段四
+# AI Agent Harness MVP — 阶段五
 
 已实现 Python 的最小运行核心：任务 → 模型 → 受控工具 → 反馈 → 终态。模型使用 OpenAI 兼容的 Chat Completions 工具协议，模型及服务地址由用户配置。
 
@@ -91,7 +91,7 @@ python -m harness inspect <run-id> --events
 
 运行中按 Ctrl+C 发出取消信号：停止后续操作，取消等待中的请求/退避，并尽量保存取消终态。嵌入应用可向 `Runner.run` 传入 `asyncio.Event`。远端模型是否已消耗用量，不因客户端取消而得到保证。
 
-正常模型结束为 `unverified`，因为尚未配置通用结果验证器。其他终态为 `failed`、`cancelled`、`budget_exceeded`。无终态文件时查看器报告 `no_terminal_result`：可能仍在运行，也可能意外中断，不会误报完成或自动续跑。
+没有配置检查时，模型正常结束为 `unverified`。配置检查全部通过为 `completed`，修正机会耗尽仍失败为 `verification_failed`；其他终态为 `failed`、`cancelled`、`budget_exceeded`。没有终态文件的历史记录展示 `interrupted`；CLI 对 owner_pid 仍存活的记录显示 `running` 提示。不会误报完成或自动续跑。
 
 退出码：正常结束 0、执行失败/预算耗尽/闭环验收失败 1、配置或文件错误 2、用户取消 130。
 
@@ -151,7 +151,7 @@ python -m tests.live_stage_three
 python -m tests.live_stage_three --run-id <run-id>
 ```
 
-阶段三历史检查与真实 Web 模型样例及浏览器交互证据见阶段三验收。正常模型结束仍为 unverified；模型自检与计划 completed 不表示通用检查器已通过。阶段四新增真实 shell 与进程树控制，完整失败恢复留待阶段五。
+阶段三历史检查与真实 Web 模型样例及浏览器交互证据见阶段三验收。无配置检查时模型结束仍为 unverified；模型自检与计划 completed 不能替代执行器检查。阶段四新增真实 shell 与进程树控制，阶段五补齐有限失败恢复、配置检查与报告。
 
 ## 阶段四 Shell
 
@@ -162,6 +162,26 @@ python -m tests.live_stage_three --run-id <run-id>
 超时、取消、服务正常关闭均先终止进程树并确认退出；终止未确认显示执行失败并阻止新任务，需人工检查后重启。Shell 不是沙箱，可访问工作目录以外资源，仅用于可信项目。普通 CLI 无审批入口，不提供 shell。
 
 设计与验收见 [阶段四设计](docs/STAGE_FOUR_DESIGN.md)、[阶段四验收](docs/STAGE_FOUR_ACCEPTANCE.md)。固定无害命令的真实模型验收可运行 `python -m tests.live_stage_four`；该脚本会调用配置的真实模型，产生 API 用量。
+
+## 阶段五 恢复与检查
+
+临时模型请求有限退避重试；格式错误允许有限修正，非法批次不执行。工具失败反馈模型，不自动重放写入或命令。相同操作连续失败达到上限停止；写入结果不确定时必须先读取文件，明确拒绝的相同命令本次运行不再审批。所有恢复继续消耗原运行预算。
+
+在启动用的 JSON 配置中添加 checks，例如以下文件检查（默认 checks=[]）：
+
+```json
+"checks": [
+  {"id": "summary_content", "type": "file_contains", "path": "summary.txt", "text": "来源：input.txt"}
+]
+```
+
+文件检查只能读取工作目录内、大小受限的 UTF-8 文本。也可配置 shell 检查：`{"id":"tests","type":"shell","command":"python -m unittest discover -s tests","timeout_seconds":30}`。每次检查命令均在 Web 请求独立审批，拒绝、超时和非零退出码都不能通过；CLI 没有审批代理，不能执行 shell 检查。Windows 返回实际 PowerShell 退出码，如需保留原生命令退出码，命令显式加 `; exit $LASTEXITCODE` 并一同审批。
+
+模型提出最终答复后，后端运行配置检查；失败证据反馈模型，在剩余预算内修正后可重新检查。默认 max_verification_attempts=2（含初次）、max_model_repairs=2、max_consecutive_failures=3、max_tool_calls=64。模型不能改写这些检查标准。配置文件更改后重启服务，新任务才采用新值。
+
+页面区分指定检查通过、未验证、检查失败、执行失败、取消、预算耗尽和中断，答复下方可展开检查证据、操作/产物清单及未完成事项；原始报告在 result.json。completed 仅表示配置项通过，不能推广为所有需求都已验证。
+
+详见 [阶段五设计](docs/STAGE_FIVE_DESIGN.md)、[阶段五验收](docs/STAGE_FIVE_ACCEPTANCE.md)。运行 `python -m tests.live_stage_five` 可复现固定失败→模型修正→重新审批→通过的真实模型验收，会产生 API 用量。阶段六整体验收未自动开始。
 
 ## 问答与轮数预算
 

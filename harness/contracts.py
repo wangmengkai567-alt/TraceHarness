@@ -6,6 +6,9 @@ from typing import Any
 
 
 class Status(str, Enum):
+    COMPLETED = "completed"
+    VERIFICATION_FAILED = "verification_failed"
+    INTERRUPTED = "interrupted"
     UNVERIFIED = "unverified"
     FAILED = "failed"
     CANCELLED = "cancelled"

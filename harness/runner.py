@@ -3,18 +3,22 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import copy
+import os
 from pathlib import Path
 from typing import Awaitable, Protocol, TypeVar
 
 from .config import Config
 from .contracts import ModelError, ModelReply, Status, ToolCall, ToolResult
-from .models import Model
+from .models import Model, parse_reply
 from .store import RunStore, utc_now
 from .tools import CoreTools, bound_result
 from .files import FileError, FileTools
 from .context import RunTools, TaskContext
 from .processes import TerminationUnconfirmed
 from .shell import ShellTools
+from .recovery import Recovery, REPAIRABLE_MODEL_ERRORS
+from .verification import verify
 
 T = TypeVar("T")
 LIVE_CHECK_TASK = "先调用 add_integers 计算 47+58，再把工具返回值交给 multiply_integers 乘以 3，报告最终结果。"
@@ -32,12 +36,13 @@ class Halt(Exception):
 
 class Runner:
     def __init__(self, config: Config, model: Model, *, tools: Tools | None = None,
-                 secrets: tuple[str, ...] = (), approve=None):
+                 secrets: tuple[str, ...] = (), approve=None, phase=None):
         config.validate()
         self.config, self.model = config, model
         self.tools = tools if tools is not None else CoreTools()
         self.secrets = secrets
         self.approve = approve
+        self.phase = phase if phase is not None else lambda value: None
         self.termination_unconfirmed = False
 
     async def run(self, task: str, workspace: Path,
@@ -60,12 +65,20 @@ class Runner:
         history: list[list[dict]] = []
         context = None
         run_tools = self.tools
+        recovery = None
+        operations = []
+        artifacts = {}
+        check_evidence = []
+        verification_attempts = 0
+        model_repairs = 0
+        checks = copy.deepcopy(config.checks)
         store.write_json("metadata.json", {
             "schema_version": 1, "run_id": store.run_id, "started_at": utc_now(),
             "workspace": str(workspace), "task": task[:config.max_input_chars],
             "task_truncated": len(task) > config.max_input_chars,
             "config": config.snapshot(), "mode": config.provider,
             "final_response_policy": "reserve_last_turn",
+            "owner_pid": os.getpid(),
         })
         store.emit("run_started", provider=config.provider)
 
@@ -99,16 +112,68 @@ class Runner:
                     raise Halt(Status.FAILED, "process_termination_unconfirmed")
 
         def finish(status: Status, reason: str, answer: str | None = None) -> dict:
+            for item in check_evidence:
+                if item.get("status") == "running":
+                    item.update(status="interrupted", passed=False, error="check_interrupted")
             result = store.redact({
                 "schema_version": 1, "run_id": store.run_id, "status": status.value,
-                "reason": reason, "answer": answer, "verified": False,
+                "reason": reason, "answer": answer, "verified": status == Status.COMPLETED,
                 "turns": turns, "model_calls": model_calls, "tool_calls": tool_calls,
                 "usage": usage, "elapsed_seconds": round(time.monotonic() - started, 3),
                 "finished_at": utc_now(), "run_directory": str(store.directory),
                 "state": context.snapshot() if context else None,
+                "operations": operations, "artifacts": list(artifacts.values()),
+                "checks": check_evidence, "verification_attempts": verification_attempts,
+                "unresolved": ((context.memory["unresolved"] if context else [])
+                               + list(recovery.unresolved.values()) if recovery else []),
+                "unfinished_steps": [step for step in context.plan if step["status"] != "completed"] if context else [],
+                "completion_scope": "Only configured checks are verified." if status == Status.COMPLETED else
+                                    "No verified completion; consult checks and unfinished work.",
             })
             store.emit("run_finished", **result)
             store.write_json("result.json", result)
+            return result
+
+        async def dispatch(call: ToolCall, purpose="task") -> ToolResult:
+            nonlocal tool_calls
+            check()
+            if tool_calls >= config.max_tool_calls:
+                raise Halt(Status.BUDGET_EXCEEDED, "tool_call_limit")
+            tool_calls += 1
+            store.emit("tool_requested", call_id=call.id, name=call.name, arguments=call.arguments, purpose=purpose)
+            record = {"call_id": call.id, "name": call.name, "purpose": purpose,
+                      "ok": None, "error": "operation_interrupted_or_outcome_unknown"}
+            operations.append(record)
+            result = recovery.blocked(call)
+            # A configured check is explicitly repeatable, but still needs a fresh shell approval.
+            if purpose == "verification" and result and result.error == "side_effect_uncertain_no_replay":
+                result = None
+            if result is None:
+                try:
+                    timeout = (config.approval_timeout_seconds + config.shell_timeout_seconds + 1
+                               if call.name == "run_command" and self.approve else config.tool_timeout_seconds)
+                    result = await controlled(run_tools.execute(call), timeout, "tool_timeout")
+                except TerminationUnconfirmed:
+                    self.termination_unconfirmed = True
+                    raise Halt(Status.FAILED, "process_termination_unconfirmed") from None
+                except Halt:
+                    raise
+                except ModelError as error:
+                    result = ToolResult(False, error=error.code)
+                except Exception:
+                    result = ToolResult(False, error="tool_execution_error")
+            recovery.observe(call, result)
+            record.update(ok=result.ok, error=result.error)
+            if isinstance(result.data, dict):
+                record["evidence"] = {key: value for key, value in result.data.items()
+                                      if key in {"path", "sha256", "bytes", "exit_code", "timed_out"}}
+                if result.ok and call.name == "write_file" and "path" in result.data:
+                    artifacts[result.data["path"]] = result.data
+            result = bound_result(result, config.max_output_chars)
+            store.emit("tool_responded", call_id=call.id, name=call.name, result=result.wire(), purpose=purpose)
+            check()
+            if recovery.repeats >= config.max_consecutive_failures:
+                raise Halt(Status.FAILED, "repeated_tool_failure")
             return result
 
         try:
@@ -127,10 +192,16 @@ class Runner:
             core = (ShellTools(workspace, config, self.approve, store.emit, cancel, self.tools)
                     if self.approve else self.tools)
             run_tools = RunTools(core, files, context)
+            recovery = Recovery(files)
             for turn in range(1, config.max_turns + 1):
                 check()
                 turns = turn
                 messages, dropped = context.assemble(history, config.recent_history_turns)
+                if checks:
+                    messages.insert(1, {"role": "system", "content": "Operator-configured verification checks: "
+                        + json.dumps(checks, ensure_ascii=False) + ". On your final answer the executor runs these checks. "
+                        "If they fail, repair within remaining budgets and answer again. Each shell check needs approval. "
+                        "Previous check evidence: " + json.dumps(check_evidence, ensure_ascii=False)})
                 final_response_only = turn == config.max_turns
                 schemas = [] if final_response_only else run_tools.schemas()
                 messages.insert(1, {"role": "system", "content": (
@@ -162,14 +233,25 @@ class Runner:
                     try:
                         reply = await controlled(self.model.complete(messages, schemas),
                                                  config.request_timeout_seconds, "model_request_timeout")
+                        reply = parse_reply({"choices": [{"message": reply.message(),
+                                             "finish_reason": reply.finish_reason}], "usage": reply.usage}, config)
                         break
                     except ModelError as error:
                         store.emit("model_error", code=error.code, retryable=error.retryable)
+                        if error.code in REPAIRABLE_MODEL_ERRORS and model_repairs < config.max_model_repairs and not final_response_only:
+                            model_repairs += 1
+                            store.emit("model_repair_requested", code=error.code, repair=model_repairs)
+                            history.append([{"role": "user", "content": "Executor rejected the model response: "
+                                            + error.code + ". No tools from that response ran. Return a valid response."}])
+                            reply = None
+                            break
                         if not error.retryable or attempt >= config.max_retries:
                             raise
                         delay = config.retry_base_seconds * 2 ** attempt
                         store.emit("model_retry_scheduled", delay_seconds=delay)
                         await controlled(asyncio.sleep(delay), delay + 1, "retry_wait_timeout")
+                if reply is None:
+                    continue
                 check()
                 # Protect every adapter, including injected/simulated ones.
                 message = reply.message()
@@ -181,7 +263,12 @@ class Runner:
                     raise ModelError("model_tool_call_limit")
                 ids = [call.id for call in reply.tool_calls]
                 if len(set(ids)) != len(ids) or used_ids.intersection(ids):
-                    raise ModelError("duplicate_tool_call_id")
+                    if model_repairs >= config.max_model_repairs or final_response_only:
+                        raise ModelError("duplicate_tool_call_id")
+                    model_repairs += 1
+                    store.emit("model_repair_requested", code="duplicate_tool_call_id", repair=model_repairs)
+                    history.append([{"role": "user", "content": "Duplicate tool call ID rejected; none of this response's tools ran. Use new IDs."}])
+                    continue
                 used_ids.update(ids)
                 for key, value in reply.usage.items():
                     if type(value) is int and value >= 0:
@@ -196,28 +283,26 @@ class Runner:
                 if not reply.tool_calls:
                     if not reply.content or not reply.content.strip():
                         raise ModelError("model_empty_response")
-                    return finish(Status.UNVERIFIED, "model_finished_without_verifier", reply.content)
+                    if not checks:
+                        return finish(Status.UNVERIFIED, "model_finished_without_verifier", reply.content)
+                    verification_attempts += 1
+                    self.phase("verifying")
+                    store.emit("verification_started", attempt=verification_attempts)
+                    check_evidence = []
+                    await verify(checks, files, dispatch, check, store, check_evidence)
+                    passed = all(item["passed"] for item in check_evidence)
+                    store.emit("verification_finished", attempt=verification_attempts, passed=passed, checks=check_evidence)
+                    self.phase("running")
+                    if passed:
+                        return finish(Status.COMPLETED, "configured_checks_passed", reply.content)
+                    if final_response_only or verification_attempts >= config.max_verification_attempts:
+                        return finish(Status.VERIFICATION_FAILED, "configured_checks_failed", reply.content)
+                    history.append([{"role": "user", "content": "Executor verification failed. Correct the work and plan if possible, "
+                                    "then give a new final answer; each shell check needs new approval. Evidence: "
+                                    + json.dumps(check_evidence, ensure_ascii=False)}])
+                    continue
                 for call in reply.tool_calls:
-                    check()
-                    tool_calls += 1
-                    store.emit("tool_requested", call_id=call.id, name=call.name, arguments=call.arguments)
-                    try:
-                        timeout = (config.approval_timeout_seconds + config.shell_timeout_seconds + 1
-                                   if call.name == "run_command" and self.approve else config.tool_timeout_seconds)
-                        result = await controlled(run_tools.execute(call), timeout,
-                                                  "tool_timeout")
-                    except TerminationUnconfirmed:
-                        self.termination_unconfirmed = True
-                        raise Halt(Status.FAILED, "process_termination_unconfirmed") from None
-                    except Halt:
-                        raise
-                    except ModelError as error:
-                        result = ToolResult(False, error=error.code)
-                    except Exception:
-                        result = ToolResult(False, error="tool_execution_error")
-                    result = bound_result(result, config.max_output_chars)
-                    check()
-                    store.emit("tool_responded", call_id=call.id, name=call.name, result=result.wire())
+                    result = await dispatch(call)
                     group.append({"role": "tool", "tool_call_id": call.id,
                                      "content": json.dumps(result.wire(), ensure_ascii=False)})
             raise Halt(Status.BUDGET_EXCEEDED, "turn_limit")

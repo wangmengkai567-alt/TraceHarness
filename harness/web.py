@@ -123,7 +123,8 @@ class RunManager:
     async def run_model(self, record: ActiveRun, task: str, workspace: Path, model):
         try:
             runner = Runner(self.config, model, secrets=self.secrets,
-                            approve=lambda spec: self.request_approval(record, spec))
+                            approve=lambda spec: self.request_approval(record, spec),
+                            phase=lambda value: setattr(record, "status", value))
             result = await runner.run(
                 task, workspace, record.cancel, store=record.store)
             self.process_control_blocked = runner.termination_unconfirmed
@@ -137,6 +138,7 @@ class RunManager:
             record.store.emit("web_run_error", code="run_start_or_storage_error")
 
     async def request_approval(self, record: ActiveRun, spec: dict):
+        previous_status = record.status
         duration = self.approval_timeout
         record.approval = {**spec, "id": uuid4().hex, "run_id": record.store.run_id,
                            "type": "shell", "status": "pending", "approval_timeout_seconds": duration}
@@ -160,7 +162,7 @@ class RunManager:
         finally:
             if not record.decision.done():
                 record.decision.cancel()
-            record.status = "running"
+            record.status = previous_status
 
     async def run_demo(self, record: ActiveRun, task: str, workspace: Path):
         """An approval state-machine exercise, never a model or command executor."""
@@ -284,7 +286,10 @@ class RunManager:
                 "metadata": metadata, "state": state, "rules": read_json(folder / "rules.json"),
                 "result": result, "artifacts": list(artifacts.values()),
                 "checks": {"verified": bool(result and result.get("verified")),
-                           "note": "尚未配置通用结果验证器；模型自检可查看工具轨迹。"},
+                           "evidence": result.get("checks", []) if result else [],
+                           "note": ("仅所配置检查项通过，不代表全部需求已验证。" if result and result.get("verified") else
+                                    "配置检查未全部通过；请查看检查证据。" if result and result.get("checks") else
+                                    "尚未配置或尚未执行结果检查；模型自检可查看工具轨迹。")},
                 "approval": active.approval if live else None}
 
     async def dispatch(self, method: str, path: str, body=None):

@@ -4,7 +4,7 @@
 
 日期：2026-10-14
 
-状态：阶段一至四已交付；阶段四已完成逐条 Shell 审批、Windows 进程树控制、工程检查及真实模型 Web API 验收，详见 docs/STAGE_FOUR_ACCEPTANCE.md；阶段五、六尚未开始。
+状态：阶段一至五已交付；阶段五已完成有限失败恢复、配置结果检查、终态报告及真实模型失败后修正验收，详见 docs/STAGE_FIVE_ACCEPTANCE.md；阶段六尚未开始。
 
 ## 1. 目标与范围
 
@@ -179,3 +179,5 @@
 阶段三交付与限制见 `docs/STAGE_THREE_DESIGN.md`、`docs/STAGE_THREE_ACCEPTANCE.md`；启动方式为 `python -m harness serve --env-file .env`。
 
 阶段四交付与限制见 `docs/STAGE_FOUR_DESIGN.md`、`docs/STAGE_FOUR_ACCEPTANCE.md`；真实 shell 仅在 Web 审批代理下开放，普通 CLI 不提供 shell。
+
+阶段五交付与限制见 `docs/STAGE_FIVE_DESIGN.md`、`docs/STAGE_FIVE_ACCEPTANCE.md`；配置 checks 后执行指定检查，失败可在剩余预算内修正，无检查仍为 unverified。

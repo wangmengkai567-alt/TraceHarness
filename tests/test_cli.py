@@ -45,7 +45,7 @@ class CLITests(unittest.TestCase):
         (folder / "metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
         result = self.command("inspect", run_id)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(json.loads(result.stdout)["status"], "no_terminal_result")
+        self.assertEqual(json.loads(result.stdout)["status"], "interrupted")
         self.assertEqual(self.command("inspect", "../escape").returncode, 2)
 
     def test_inspect_date_sequence_id_and_events(self):
@@ -60,6 +60,15 @@ class CLITests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn(run_id, result.stdout)
         self.assertTrue(result.stdout.rstrip().endswith(event))
+
+    def test_inspect_live_owner_does_not_report_interrupted_or_kill_owner(self):
+        run_id = "20261016001"
+        folder = self.folder / "runs" / run_id
+        folder.mkdir(parents=True)
+        folder.joinpath("metadata.json").write_text(json.dumps({"run_id": run_id, "owner_pid": os.getpid()}), encoding="utf-8", newline="\n")
+        result = self.command("inspect", run_id)
+        self.assertEqual(json.loads(result.stdout)["status"], "running")
+        self.assertEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":

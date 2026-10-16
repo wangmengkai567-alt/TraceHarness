@@ -22,5 +22,10 @@
   "max_rules_bytes": 16384,
   "max_directory_entries": 200,
   "recent_history_turns": 4,
-  "max_state_chars": 16000
+  "max_state_chars": 16000,
+  "max_tool_calls": 64,
+  "max_model_repairs": 2,
+  "max_consecutive_failures": 3,
+  "max_verification_attempts": 2,
+  "checks": []
 }

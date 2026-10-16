@@ -217,7 +217,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_duplicate_calls_are_not_executed(self):
         model = ScriptModel(call(), call())
-        result = await self.run_model(model)
+        result = await self.run_model(model, config=replace(self.config, max_model_repairs=0))
         self.assertEqual(result["reason"], "duplicate_tool_call_id")
         self.assertEqual(result["tool_calls"], 1)
 

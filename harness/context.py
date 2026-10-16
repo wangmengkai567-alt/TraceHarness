@@ -23,7 +23,10 @@ PRIORITY = (
     "Report actual failures and unfinished work. Never invent verification or edit AGENTS.md. "
     "Use only the tools advertised for this run. Shell, when available, requires a new explicit "
     "user approval for every command, retry, and check. Rejection is not permission to retry the same "
-    "command. Shell is not a sandbox. A final answer is unverified."
+    "command. Shell is not a sandbox. Do not replay an uncertain side effect: read the affected file "
+    "before attempting another write, and report uncertainty for shell failures. Correct invalid arguments "
+    "and revise the plan when needed, within the same budget. The executor alone determines verification "
+    "from operator-configured checks; without checks the final answer is unverified."
 )
 
 

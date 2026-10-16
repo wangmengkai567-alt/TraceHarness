@@ -5,10 +5,10 @@ let token = "", selected = "", cursor = 0, epoch = 0, loading = false, posting =
 let snapshot = null, runs = [], nextHistory = 0, activeTab = "answer";
 let displayedLogs = 0, observedTurn = 0, lastAnswerKey = "", lastPlanKey = "", lastHistoryKey = "", prefilledRun = "", formDirty = false;
 const seen = new Set();
-const statuses = {running: "运行中", awaiting_approval: "等待审批", cancelling: "正在取消", cancelled: "已取消", unverified: "已结束 · 未验证", failed: "执行失败", budget_exceeded: "预算耗尽", interrupted: "运行已中断"};
-const activeStatuses = new Set(["running", "awaiting_approval", "cancelling"]);
-const reasons = {turn_limit: "已达到模型交互轮数上限，未收到有效的最终答复。请查看执行轨迹；需要继续时可调整 max_turns 后发起新任务。", model_call_limit: "已达到模型请求次数上限（包含重试），未收到最终答复。", total_timeout: "已达到本次运行的总时长上限。", input_char_limit: "模型输入超过上下文字符预算。", model_request_timeout: "模型请求超时，有限重试后仍未成功。"};
-const eventNames = {run_started: "运行开始", rules_loaded: "规范已加载", plan_updated: "计划变更", memory_updated: "记忆更新", model_requested: "请求模型", model_responded: "模型回复", tool_requested: "调用工具", tool_responded: "工具反馈", model_error: "模型错误", model_retry_scheduled: "请求重试", context_history_limited: "历史裁剪", final_response_requested: "请求最终答复", tool_dispatch_blocked: "已阻止工具调用", cancel_requested: "请求取消", approval_requested: "等待审批", approval_decided: "审批决定", approval_cancelled: "审批已取消", approval_expired: "审批已过期", simulated_action_completed: "模拟操作完成", run_finished: "运行结束"};
+const statuses = {running: "运行中", verifying: "正在检查", awaiting_approval: "等待审批", cancelling: "正在取消", cancelled: "已取消", completed: "指定检查通过", verification_failed: "检查失败", unverified: "已结束 · 未验证", failed: "执行失败", budget_exceeded: "预算耗尽", interrupted: "运行已中断"};
+const activeStatuses = new Set(["running", "verifying", "awaiting_approval", "cancelling"]);
+const reasons = {configured_checks_failed: "配置检查未全部通过，详见检查证据。", repeated_tool_failure: "连续相同工具失败达到上限，已停止派发。", tool_call_limit: "工具调用总预算已耗尽。", process_termination_unconfirmed: "无法确认进程树已结束；已停止后续操作，请检查残留进程。", turn_limit: "已达到模型交互轮数上限，未收到有效的最终答复。请查看执行轨迹；需要继续时可调整 max_turns 后发起新任务。", model_call_limit: "已达到模型请求次数上限（包含重试），未收到最终答复。", total_timeout: "已达到本次运行的总时长上限。", input_char_limit: "模型输入超过上下文字符预算。", model_request_timeout: "模型请求超时，有限重试后仍未成功。"};
+const eventNames = {verification_started: "开始检查", verification_finished: "检查结束", check_started: "执行检查项", check_finished: "检查项结果", model_repair_requested: "请求修正模型格式", run_started: "运行开始", rules_loaded: "规范已加载", plan_updated: "计划变更", memory_updated: "记忆更新", model_requested: "请求模型", model_responded: "模型回复", tool_requested: "调用工具", tool_responded: "工具反馈", model_error: "模型错误", model_retry_scheduled: "请求重试", context_history_limited: "历史裁剪", final_response_requested: "请求最终答复", tool_dispatch_blocked: "已阻止工具调用", cancel_requested: "请求取消", approval_requested: "等待审批", approval_decided: "审批决定", approval_cancelled: "审批已取消", approval_expired: "审批已过期", simulated_action_completed: "模拟操作完成", run_finished: "运行结束"};
 function text(id, value) { if ($(id).textContent !== String(value ?? "")) $(id).textContent = value ?? ""; }
 function pretty(value) { return JSON.stringify(value, null, 2); }
 function node(tag, className, content) {
@@ -137,7 +137,7 @@ function render(value) {
   text("overview-badge", value.status === "unverified" ? "未验证" : statuses[value.status] || value.status);
   $("overview-badge").dataset.status = value.status;
   $("status-symbol").dataset.state = value.status;
-  text("status-symbol", value.status === "unverified" ? "✓" : ["failed", "budget_exceeded"].includes(value.status) ? "!" : value.status === "running" ? "◌" : "○");
+  text("status-symbol", value.status === "completed" ? "✓" : ["failed", "verification_failed", "budget_exceeded"].includes(value.status) ? "!" : activeStatuses.has(value.status) ? "◌" : "○");
   text("result-subtitle", metadata.task || "从一个目标开始，让每次执行都有迹可循");
   $("result-subtitle").title = metadata.task || "";
   text("run-meta", displayRunId(value.run_id)); $("run-meta").title = value.run_id;
@@ -180,7 +180,17 @@ function render(value) {
     else emptyAnswer(value.status === "awaiting_approval" ? "等待你的决定" : "任务正在执行", "可以在右侧日志窗口查看最新进展，最终回答将在这里呈现。");
   }
   text("answer-label", result ? "本次任务的最终回复" : "等待任务结果");
-  text("verification", value.checks.verified ? "配置的检查已通过" : value.checks.note);
+  text("verification", value.checks.verified ? "仅所配置检查项通过；其他需求仍需核对。" : value.checks.note);
+  const report = $("completion-report"); report.replaceChildren();
+  if (result && (result.checks || result.operations)) {
+    const details = node("details", "context-details");
+    details.append(node("summary", "", "检查证据、操作与未完成事项"), node("pre", "", pretty({
+      status: statuses[value.status] || value.status, reason: result.reason,
+      checks: result.checks || [], operations: result.operations || [], artifacts: result.artifacts || [],
+      unfinished_steps: result.unfinished_steps || [], unresolved: result.unresolved || [], scope: result.completion_scope,
+    })));
+    report.append(details);
+  }
   const artifacts = $("artifacts"); artifacts.replaceChildren();
   for (const artifact of value.artifacts) {
     const li = node("li");
@@ -236,7 +246,7 @@ function appendEvent(event) {
   let level = event.type === "plan_updated" ? "STEP" : event.type.startsWith("tool_") ? "TOOL" : "INFO";
   if (event.type === "model_error" || event.data.result?.ok === false) level = "ERROR";
   else if (["context_history_limited", "model_retry_scheduled", "tool_dispatch_blocked", "approval_expired"].includes(event.type)) level = "WARN";
-  else if (event.type === "run_finished") level = ["failed", "budget_exceeded"].includes(event.data.status) ? "WARN" : "END";
+  else if (event.type === "run_finished") level = ["failed", "verification_failed", "budget_exceeded"].includes(event.data.status) ? "WARN" : "END";
   const row = node("div", "log-row"); row.dataset.sequence = String(event.sequence);
   const tag = node("span", "log-level", level); tag.dataset.level = level;
   let logHint = eventHint(event);
@@ -325,6 +335,7 @@ function select(run) {
   $("artifacts").replaceChildren(node("li", "empty-note", "暂无产物")); text("file-count", "0");
   text("rules-version", "尚未加载"); text("rules", "暂无记录"); text("memory", "{}"); text("metadata", "暂无记录"); text("run-limits", "");
   $("approval-section").hidden = true;
+  $("completion-report").replaceChildren();
   emptyAnswer(run ? "正在读取运行记录" : "让想法成为结果", run ? "正在恢复本次回答与执行轨迹。" : "在左侧描述你的任务，回答、产物与执行过程会在这里呈现。");
   localStorage.setItem("harness.run", run);
   window.history.replaceState(null, "", run ? "#" + run : location.pathname);

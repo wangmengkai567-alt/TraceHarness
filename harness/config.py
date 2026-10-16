@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -36,6 +36,11 @@ class Config:
     max_directory_entries: int = 200
     recent_history_turns: int = 4
     max_state_chars: int = 16000
+    max_tool_calls: int = 64
+    max_model_repairs: int = 2
+    max_consecutive_failures: int = 3
+    max_verification_attempts: int = 2
+    checks: list[dict] = field(default_factory=list)
 
     def validate(self) -> None:
         if self.provider != "openai_compatible":
@@ -51,6 +56,7 @@ class Config:
             "max_completion_tokens",
             "max_file_bytes", "max_rules_bytes", "max_directory_entries",
             "recent_history_turns", "max_state_chars",
+            "max_tool_calls", "max_consecutive_failures", "max_verification_attempts",
         )
         for name in integers:
             value = getattr(self, name)
@@ -58,6 +64,8 @@ class Config:
                 raise ValueError(f"{name} must be a positive integer")
         if self.max_output_chars < 128:
             raise ValueError("max_output_chars must be at least 128")
+        if type(self.max_model_repairs) is not int or not 0 <= self.max_model_repairs <= 10:
+            raise ValueError("max_model_repairs must be between 0 and 10")
         if self.completion_token_parameter not in {"max_tokens", "max_completion_tokens"}:
             raise ValueError("completion_token_parameter must be max_tokens or max_completion_tokens")
         if type(self.max_retries) is not int or not 0 <= self.max_retries <= 10:
@@ -68,6 +76,8 @@ class Config:
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be positive and finite")
+        from .verification import validate_checks
+        validate_checks(self.checks, self.shell_timeout_seconds)
         if self.provider == "openai_compatible":
             if not self.model.strip():
                 raise ValueError("set HARNESS_MODEL or model in config")
