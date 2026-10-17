@@ -1,4 +1,8 @@
-"""Bounded Tavily Search/Extract; page text is data, never execution authority."""
+"""受预算限制的 Tavily 搜索和网页正文抽取，维护来源索引与分页阅读记录。
+
+搜索只返回摘要；正文通过 extract 获取后保存，后续用 document_id 分段读取。
+网页内容始终视为不可信资料，不能授予执行权限或覆盖项目规则。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -18,17 +22,19 @@ from .store import utc_now
 
 
 class NetworkError(Exception):
+    # 联网工具向模型返回的安全错误码，不包含服务商原始响应内容。
     pass
 
 
 def public_address(value):
+    # 仅允许公网单播地址，排除私网、回环、保留地址等非公开访问目标。
     address = ipaddress.ip_address(value)
     return (address.is_global and not address.is_multicast and not address.is_reserved
             and not getattr(address, "is_site_local", False))
 
 
 def public_url(value):
-    """Syntactic/literal checks. DNS is checked separately before extraction."""
+    """检查 URL 形式和字面 IP；域名解析结果另在正文抽取前检查。"""
     if not isinstance(value, str) or len(value) > 2048 or any(c.isspace() or ord(c) < 32 for c in value):
         raise NetworkError("unsafe_url")
     try:
@@ -54,6 +60,7 @@ def public_url(value):
 
 
 async def check_public_dns(url):
+    # 不仅检查 URL 中的主机名，还要拒绝解析到非公网地址的域名。
     host = urlsplit(url).hostname
     try:
         addresses = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
@@ -64,7 +71,9 @@ async def check_public_dns(url):
 
 
 class NetworkTools:
+    # sources 保存 S1/S2 来源索引，documents 保存 D1/D2 正文；编号在当前运行内有效。
     def __init__(self, core, config, store, api_key, *, transport=None, dns_check=check_public_dns):
+        # transport 和 dns_check 可注入测试替身；未命中的工具仍转发给 core。
         self.core, self.config, self.store = core, config, store
         self.api_key, self.transport, self.dns_check = api_key, transport, dns_check
         self.counts = {"search": 0, "extract": 0}
@@ -73,9 +82,11 @@ class NetworkTools:
 
     @property
     def available(self):
+        # 配置开启且密钥存在才可用；缺少任一条件就不向模型声明联网工具。
         return self.config.network_enabled and bool(self.api_key)
 
     def schemas(self):
+        # 搜索返回摘要；读网页使用 URL 首次获取，之后可用文档 ID 和字符偏移续读。
         if not self.available:
             return self.core.schemas()
         return self.core.schemas() + [
@@ -93,12 +104,14 @@ class NetworkTools:
                               "max_chars": {"type": "integer", "minimum": 1, "maximum": self.config.web_chunk_chars}}, [])]
 
     def summary(self):
+        # 提供配置状态、实际可用性、请求计数和来源索引，不包含正文和密钥。
         return {"enabled": self.config.network_enabled, "available": self.available,
                 "unavailable_reason": None if self.available else ("network_disabled" if not self.config.network_enabled else "network_key_missing"),
                 "requests": dict(self.counts), "sources": list(self.sources.values()),
                 "storage_chars": self.storage_chars}
 
     def prompt(self):
+        # 每轮提示模型当前能否联网、有哪些已知来源，以及引用和完整性声明的限制。
         if not self.available:
             return ("Network unavailable: " + self.summary()["unavailable_reason"]
                     + ". No network tools are advertised. Do not claim to have searched/read online.")
@@ -112,15 +125,18 @@ class NetworkTools:
                 "No network capability means no claim of having searched/read online.")
 
     def save(self):
+        # 将来源索引保存到运行目录，供 Web 展示及运行结束后复盘。
         if self.config.network_enabled:
             self.store.write_json("sources.json", self.summary())
 
     def citation_check(self, answer):
+        # 只检查 [S数字] 是否对应已知来源，不自动判断论据是否正确或网页是否完整。
         cited = set(re.findall(r"\[(S[0-9]+)\]", answer or ""))
         return {"cited": sorted(cited), "unknown": sorted(cited - self.sources.keys()),
                 "scope": "Source ID existence only; not factual support or page completeness."}
 
     def _source(self, url, title="", published_date=None):
+        # 相同 URL 复用来源编号；新来源最初仅为 snippet_only，不能声称已读正文。
         for source in self.sources.values():
             if source["url"] == url:
                 return source
@@ -133,12 +149,14 @@ class NetworkTools:
         return source
 
     def _safe_url(self, value):
+        # 公网 URL 检查之外，再拒绝含已知密钥的地址，避免随 URL 外传凭据。
         url = public_url(value)
         if any(secret in url for secret in self.store.secrets):
             raise NetworkError("sensitive_url")
         return url
 
     async def _request(self, endpoint, payload):
+        # 两类接口分别计预算；实际 HTTP 尝试（包括重试）都会消耗请求次数。
         limit = self.config.max_search_requests if endpoint == "search" else self.config.max_extract_requests
         timeout = self.config.search_timeout_seconds if endpoint == "search" else self.config.extract_timeout_seconds
         for attempt in range(self.config.max_retries + 1):
@@ -160,6 +178,7 @@ class NetworkTools:
                             retryable = response.status_code in {429, 500, 502, 503, 504}
                         else:
                             body = bytearray()
+                            # 先限制原始响应字节，再解码 JSON，避免无限制加载远端内容。
                             async for chunk in response.aiter_bytes():
                                 if len(body) + len(chunk) > self.config.network_max_response_bytes:
                                     raise NetworkError("network_response_too_large")
@@ -183,13 +202,16 @@ class NetworkTools:
             if self.counts[endpoint] >= limit:
                 raise NetworkError(endpoint + "_request_limit")
             delay = self.config.retry_base_seconds * (2 ** attempt)
+            # 只对暂时性错误退避重试；Runner 的外层控制仍会响应取消和总时限。
             self.store.emit("network_retry_scheduled", endpoint=endpoint, delay_seconds=delay)
             await asyncio.sleep(delay)
 
     def _fits(self, result):
+        # 检查完整工具反馈的序列化长度，元数据也计入输出预算。
         return len(json.dumps(result.wire(), ensure_ascii=False)) <= self.config.max_output_chars
 
     async def _search(self, args):
+        # 校验查询和域名过滤，明确关闭服务商自动回答与原始正文，保留可追溯的摘要。
         if set(args) - {"query", "max_results", "time_range", "include_domains"}:
             raise NetworkError("invalid_search_arguments")
         query, count = args.get("query"), args.get("max_results", self.config.search_max_results)
@@ -222,6 +244,7 @@ class NetworkTools:
             rows.append({"source_id": source["source_id"], "url": url, "title": source["title"],
                          "snippet": self.store.redact(item.get("content", ""))[:600]})
         result = ToolResult(True, {"results": rows, "omitted": omitted, "kind": "search_snippets"})
+        # 优先缩短摘要，仍超限再移除条目；保留 JSON 结构并明确标记截断。
         while not self._fits(result) and rows:
             if any(row["snippet"] for row in rows):
                 for row in rows:
@@ -234,6 +257,7 @@ class NetworkTools:
         return result
 
     async def _read(self, args):
+        # URL 与 document_id 必须二选一；所有 offset/end_offset 均按字符数计算。
         if (set(args) - {"url", "document_id", "offset", "max_chars"}
                 or ("url" in args) == ("document_id" in args)):
             raise NetworkError("invalid_webpage_arguments")
@@ -247,11 +271,12 @@ class NetworkTools:
             cached = next((source.get("document_id") for source in self.sources.values()
                            if source["url"] == url and source.get("document_id")), None)
             if cached:
+                # 同一 URL 已有正文时复用缓存，不重复消耗 extract 请求预算。
                 return await self._read({"document_id": cached, "offset": 0, "max_chars": size})
             await self.dns_check(url)
             if self.storage_chars >= self.config.max_web_storage_chars:
                 raise NetworkError("web_storage_limit")
-            # No query/chunks_per_source: request the extracted body, not query-ranked snippets.
+            # 不传 query/chunks_per_source，要求服务商抽取正文，而非仅返回相关片段。
             data = await self._request("extract", {"urls": [url], "extract_depth": "advanced",
                                                    "format": "markdown", "include_usage": True})
             results = data.get("results")
@@ -266,12 +291,14 @@ class NetworkTools:
             if not isinstance(raw, str) or not raw.strip():
                 raise NetworkError("web_extract_empty")
             returned_url = self._safe_url(item.get("url"))
+            # 服务商实际返回的 URL 也重新检查；正文长度和来源完整性分别记录。
             await self.dns_check(returned_url)
             text = self.store.redact(raw).replace("\r\n", "\n").replace("\r", "\n")
             heading = next((line.lstrip("# ").strip() for line in text.splitlines() if line.startswith("# ")), "")
             source = self._source(url, item.get("title") or heading or urlsplit(url).hostname)
             doc_id = "D" + str(len(self.documents) + 1)
             cap = min(self.config.max_web_document_chars, self.config.max_web_storage_chars - self.storage_chars)
+            # 单篇上限和全程存储上限同时生效；截断后的正文不能代表原网页全文。
             body = text[:cap]
             document = {"document_id": doc_id, "source_id": source["source_id"], "url": url,
                         "provider_returned_url": returned_url, "title": source["title"], "fetched_at": utc_now(),
@@ -292,6 +319,7 @@ class NetworkTools:
         if offset > document["stored_chars"]:
             raise NetworkError("web_offset_out_of_range")
         end = min(offset + size, document["stored_chars"])
+        # 一页包含来源元数据和正文；若输出超限则不断缩小正文，返回可继续读取的偏移。
         while True:
             piece = {key: value for key, value in document.items() if key not in {"content", "read_ranges"}}
             piece.update(offset=offset, end_offset=end, next_offset=end if end < document["stored_chars"] else None,
@@ -306,6 +334,7 @@ class NetworkTools:
         if end == offset and offset < document["stored_chars"]:
             raise NetworkError("web_metadata_output_limit")
         ranges = sorted(document["read_ranges"] + [[offset, end]])
+        # 合并实际交给模型的阅读区间；取过正文不等于正文已经全部送进模型上下文。
         merged = []
         for start, stop in ranges:
             if merged and start <= merged[-1][1]:
@@ -321,6 +350,7 @@ class NetworkTools:
         return result
 
     async def execute(self, call):
+        # 统一分发与计时，将可预期网络失败转换成 ToolResult 并追加操作事件。
         if call.name not in {"web_search", "read_webpage"}:
             return await self.core.execute(call)
         if not self.available:

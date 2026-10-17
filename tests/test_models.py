@@ -28,7 +28,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request.headers["Authorization"], "Bearer test-key")
             payload = json.loads(request.content)
             self.assertEqual(payload["model"], "test-model")
-            self.assertEqual(payload["max_tokens"], 1024)
+            self.assertEqual(payload["max_tokens"], 4096)
             self.assertFalse(payload["stream"])
             self.assertNotIn("max_completion_tokens", payload)
             return httpx.Response(200, json=response())
@@ -87,6 +87,27 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         for payload in ({}, [], {"choices": []}, response(content="", finish="length"), response(content="")):
             with self.assertRaises(ModelError):
                 parse_reply(payload, self.config)
+
+    def test_truncated_response_preserves_safe_diagnostics_without_accepting_tools(self):
+        payload = response(None, tools=[{"invalid": "partial-tool"}], finish="length")
+        payload["usage"] = {"prompt_tokens": 12, "completion_tokens": 1024,
+                            "total_tokens": 1036, "provider_secret": "never-record", "raw": {"private": True}}
+        with self.assertRaises(ModelError) as caught:
+            parse_reply(payload, self.config)
+        error = caught.exception
+        self.assertEqual(error.code, "model_completion_token_limit")
+        self.assertEqual(error.finish_reason, "length")
+        self.assertEqual(error.usage, {"prompt_tokens": 12, "completion_tokens": 1024, "total_tokens": 1036})
+        self.assertFalse(error.retryable)
+
+    def test_content_filter_and_other_finish_reasons_are_distinct(self):
+        for finish, code, diagnostic in (("content_filter", "model_content_filtered", "content_filter"),
+                                         ("private-provider-detail", "model_incomplete_response", "unknown")):
+            with self.assertRaises(ModelError) as caught:
+                parse_reply(response(finish=finish), self.config)
+            self.assertEqual(caught.exception.code, code)
+            self.assertEqual(caught.exception.finish_reason, diagnostic)
+            self.assertFalse(caught.exception.retryable)
 
     def test_tool_calls_parse_and_limits(self):
         tool = {"id": "call1", "type": "function", "function": {

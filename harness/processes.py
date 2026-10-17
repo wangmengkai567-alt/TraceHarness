@@ -1,4 +1,8 @@
-"""Owned process trees. Windows commands enter a job before any code runs."""
+"""管理本次命令所属的进程树，确保完成、超时或取消后都执行清理。
+
+Windows 先挂起创建进程，加入 Job Object 后再恢复；其他平台创建独立进程组。
+清理仅针对本模块创建的进程树；无法确认清理成功时抛出 TerminationUnconfirmed。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -7,10 +11,12 @@ import signal
 
 
 class TerminationUnconfirmed(Exception):
+    # 区别于普通命令失败：子进程可能仍存活，上层应阻止继续启动新任务。
     pass
 
 
 def process_alive(pid: int) -> bool:
+    # 为历史记录提供 PID 存活提示；访问被拒绝时不能认定进程已经退出。
     if os.name == "nt":
         import ctypes as c
         from ctypes import wintypes as w
@@ -20,7 +26,7 @@ def process_alive(pid: int) -> bool:
         k.CloseHandle.argtypes = [w.HANDLE]
         handle = k.OpenProcess(0x1000, False, pid)
         if not handle:
-            return c.get_last_error() == 5  # Access denied does not establish process exit.
+            return c.get_last_error() == 5  # 错误码 5 为拒绝访问，不能据此判定进程退出。
         try:
             code = w.DWORD()
             return not k.GetExitCodeProcess(handle, c.byref(code)) or code.value == 259
@@ -36,7 +42,9 @@ def process_alive(pid: int) -> bool:
 
 
 class WindowsJob:
+    # Windows Job Object 将根进程及其后代归到一起，便于整体终止和检查残留。
     def __init__(self):
+        # 显式声明 Win32 函数签名，保证 ctypes 在 64 位环境下正确传递句柄和指针。
         import ctypes as c
         from ctypes import wintypes as w
         self.c = c
@@ -60,16 +68,18 @@ class WindowsJob:
             fn.argtypes, fn.restype = args, result
 
         class Basic(c.Structure):
+            # 对应 Win32 的基础限制结构；字段顺序和大小必须与系统定义一致。
             _fields_ = [("times", c.c_int64 * 2), ("flags", w.DWORD),
                         ("working", c.c_size_t * 2), ("active", w.DWORD),
                         ("affinity", c.c_size_t), ("priority", w.DWORD), ("scheduling", w.DWORD)]
 
         class Extended(c.Structure):
+            # 扩展限制包含基础限制、IO 统计和内存限制，交给 SetInformationJobObject。
             _fields_ = [("basic", Basic), ("io", c.c_uint64 * 6), ("memory", c.c_size_t * 4)]
 
         self.handle = k.CreateJobObjectW(None, None)
         limits = Extended()
-        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE：关闭 Job 时终止其中进程。
         try:
             self.require(self.handle)
             self.require(k.SetInformationJobObject(self.handle, 9, c.byref(limits), c.sizeof(limits)))
@@ -78,11 +88,13 @@ class WindowsJob:
             raise
 
     def require(self, value):
+        # 将 Win32 API 的失败返回值转成 Python 异常，保留系统错误供内部控制使用。
         if not value:
             raise self.c.WinError(self.c.get_last_error())
         return value
 
     def attach_and_resume(self, pid):
+        # 先将仍处于挂起状态的进程纳入 Job，防止它提前创建未受管理的子进程。
         c, k = self.c, self.k
         process = self.require(k.OpenProcess(0x101, False, pid))
         try:
@@ -91,6 +103,7 @@ class WindowsJob:
             k.CloseHandle(process)
 
         class Thread(c.Structure):
+            # 线程枚举记录；根据所属 PID 找到目标进程线程并恢复执行。
             _fields_ = [("size", c.c_ulong), ("usage", c.c_ulong), ("id", c.c_ulong),
                         ("pid", c.c_ulong), ("base", c.c_long), ("delta", c.c_long), ("flags", c.c_ulong)]
 
@@ -116,21 +129,25 @@ class WindowsJob:
             k.CloseHandle(snapshot)
 
     def terminate(self):
+        # 终止 Job 内全部进程，而非仅关闭最外层 Shell。
         self.require(self.k.TerminateJobObject(self.handle, 1))
 
     def empty(self):
-        # JOBOBJECT_BASIC_ACCOUNTING_INFORMATION: four times and four DWORDs.
+        # 读取 JOBOBJECT_BASIC_ACCOUNTING_INFORMATION（四个时间值和四个 DWORD）。
+        # 第 40～43 字节为 ActiveProcesses，归零才表示整个 Job 已无活动进程。
         data = self.c.create_string_buffer(48)
         self.require(self.k.QueryInformationJobObject(self.handle, 1, data, 48, None))
         return int.from_bytes(data.raw[40:44], "little") == 0
 
     def close(self):
+        # 释放系统句柄；已关闭时可重复调用。
         if self.handle:
             self.k.CloseHandle(self.handle)
             self.handle = None
 
 
 async def run_process(argv, workspace, timeout, output_limit, emit):
+    # 对外统一入口：合并标准输出/错误，限制保留字节数，并在所有退出路径清理进程树。
     job = WindowsJob() if os.name == "nt" else None
     process = None
     reader = None
@@ -139,12 +156,14 @@ async def run_process(argv, workspace, timeout, output_limit, emit):
     total = 0
 
     async def drain():
+        # 即使已达到输出保留上限仍持续排空管道，避免子进程因管道塞满而阻塞。
         nonlocal total
         while chunk := await process.stdout.read(4096):
             total += len(chunk)
             output.extend(chunk[:max(0, output_limit - len(output))])
 
     async def cleanup():
+        # 正常退出也要清理遗留子进程，不允许借一次工具调用留下常驻后台服务。
         if process is None:
             return
         if job:
@@ -158,6 +177,7 @@ async def run_process(argv, workspace, timeout, output_limit, emit):
                 pass
         end = asyncio.get_running_loop().time() + 5
         while job and not job.empty():
+            # 发送终止请求后仍需确认没有活动进程；超过清理时限就上报不确定状态。
             if asyncio.get_running_loop().time() >= end:
                 raise TerminationUnconfirmed()
             await asyncio.sleep(0.02)
@@ -179,8 +199,9 @@ async def run_process(argv, workspace, timeout, output_limit, emit):
         emit("shell_process_stopped", pid=process.pid, tree_terminated=True)
 
     try:
+        # Windows 标志为 CREATE_SUSPENDED 和 CREATE_NO_WINDOW；POSIX 使用独立会话。
         options = {"creationflags": 0x4 | 0x08000000} if job else {"start_new_session": True}
-        # Shield creation so cancellation cannot lose the handle to a newly created process.
+        # 屏蔽创建阶段的取消传播，确保即使取消也能拿到新进程句柄并进行清理。
         spawn = asyncio.create_task(asyncio.create_subprocess_exec(
             *argv, cwd=workspace, stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **options))
@@ -197,13 +218,14 @@ async def run_process(argv, workspace, timeout, output_limit, emit):
         timed_out = False
         try:
             async with asyncio.timeout(timeout):
-                # Poll returncode: wait() can wait for inherited pipes after shell exit.
+                # 轮询退出码，避免 Shell 已退出但子进程仍持有管道，导致 wait 一直等待。
                 while process.returncode is None:
                     await asyncio.sleep(0.02)
         except TimeoutError:
             timed_out = True
         return_code = process.returncode
     finally:
+        # 无论成功、超时、取消还是创建失败，都尝试清理并释放 reader/Job 资源。
         try:
             try:
                 await cleanup()

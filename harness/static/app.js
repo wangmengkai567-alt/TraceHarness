@@ -5,14 +5,21 @@ let token = "", selected = "", cursor = 0, epoch = 0, loading = false, posting =
 let snapshot = null, runs = [], nextHistory = 0, activeTab = "answer";
 let lastNetworkKey = "";
 let lastRulesContent = null;
+let lastReportKey = "";
 let displayedLogs = 0, observedTurn = 0, lastAnswerKey = "", lastPlanKey = "", lastHistoryKey = "", prefilledRun = "", formDirty = false;
 const seen = new Set();
 const statuses = {running: "运行中", verifying: "正在检查", awaiting_approval: "等待审批", cancelling: "正在取消", cancelled: "已取消", completed: "指定检查通过", verification_failed: "检查失败", unverified: "已结束 · 未验证", failed: "执行失败", budget_exceeded: "预算耗尽", interrupted: "运行已中断"};
 const activeStatuses = new Set(["running", "verifying", "awaiting_approval", "cancelling"]);
 const reasons = {configured_checks_failed: "配置检查未全部通过，详见检查证据。", repeated_tool_failure: "连续相同工具失败达到上限，已停止派发。", tool_call_limit: "工具调用总预算已耗尽。", process_termination_unconfirmed: "无法确认进程树已结束；已停止后续操作，请检查残留进程。", turn_limit: "已达到模型交互轮数上限，未收到有效的最终答复。请查看执行轨迹；需要继续时可调整 max_turns 后发起新任务。", model_call_limit: "已达到模型请求次数上限（包含重试），未收到最终答复。", total_timeout: "已达到本次运行的总时长上限。", input_char_limit: "模型输入超过上下文字符预算。", model_request_timeout: "模型请求超时，有限重试后仍未成功。"};
+Object.assign(reasons, {
+  model_completion_token_limit: "模型生成达到单次 token 上限，响应被截断。",
+  completion_token_limit: "模型生成达到单次 token 上限，未取得完整答复。可调整 max_completion_tokens 后重新运行。",
+  model_incomplete_response: "模型返回了未完成的响应，请查看错误事件与配置。",
+  model_content_filtered: "模型服务过滤了响应，未取得可用答复。",
+});
 const eventNames = {verification_started: "开始检查", verification_finished: "检查结束", check_started: "执行检查项", check_finished: "检查项结果", model_repair_requested: "请求修正模型格式", run_started: "运行开始", rules_loaded: "规范已加载", plan_updated: "计划变更", memory_updated: "记忆更新", model_requested: "请求模型", model_responded: "模型回复", tool_requested: "调用工具", tool_responded: "工具反馈", model_error: "模型错误", model_retry_scheduled: "请求重试", context_history_limited: "历史裁剪", final_response_requested: "请求最终答复", tool_dispatch_blocked: "已阻止工具调用", cancel_requested: "请求取消", approval_requested: "等待审批", approval_decided: "审批决定", approval_cancelled: "审批已取消", approval_expired: "审批已过期", simulated_action_completed: "模拟操作完成", run_finished: "运行结束"};
 Object.assign(eventNames, {network_request: "发送网络请求", network_response: "收到网络响应", network_error: "网络错误",
-  network_retry_scheduled: "网络请求重试", network_operation: "联网工具结束"});
+  network_retry_scheduled: "网络请求重试", network_operation: "联网工具结束", model_concise_answer_requested: "请求精简收尾"});
 function text(id, value) { if ($(id).textContent !== String(value ?? "")) $(id).textContent = value ?? ""; }
 function pretty(value) { return JSON.stringify(value, null, 2); }
 function node(tag, className, content) {
@@ -196,7 +203,7 @@ function render(value) {
   const finalPolicy = metadata.final_response_policy === "reserve_last_turn" ? "最后一轮仅用于最终答复。" : "该历史运行未启用收尾轮次预留。";
   text("run-limits", metadata.mode === "approval_demo" ? "审批演练，不调用模型。" :
     "模型交互轮数：" + (result?.turns ?? "待统计") + " / " + (config.max_turns ?? "未知") + "；单次请求时限：" + (config.request_timeout_seconds ?? "未知") + " 秒；总时限：" + (config.total_timeout_seconds ?? "未知") + " 秒。" + finalPolicy);
-  text("plan-progress", plan.length ? completed + " / " + plan.length + " 已完成" : "无需或尚未规划");
+  text("plan-progress", plan.length ? completed + " / " + plan.length + " 已完成" : "尚未建立计划");
   $("plan-progress-bar").value = plan.length ? completed / plan.length * 100 : 0;
   const planKey = value.run_id + pretty(plan);
   if (planKey !== lastPlanKey) {
@@ -229,15 +236,24 @@ function render(value) {
   }
   text("answer-label", result ? "本次任务的最终回复" : "等待任务结果");
   text("verification", value.checks.verified ? "仅所配置检查项通过；其他需求仍需核对。" : value.checks.note);
-  const report = $("completion-report"); report.replaceChildren();
-  if (result && (result.checks || result.operations)) {
-    const details = node("details", "context-details");
-    details.append(node("summary", "", "检查证据、操作与未完成事项"), node("pre", "", pretty({
+  const report = $("completion-report");
+  const reportData = result && (result.checks || result.operations) ? {
       status: statuses[value.status] || value.status, reason: result.reason,
       checks: result.checks || [], operations: result.operations || [], artifacts: result.artifacts || [],
       unfinished_steps: result.unfinished_steps || [], unresolved: result.unresolved || [], scope: result.completion_scope,
-    })));
-    report.append(details);
+  } : null;
+  const reportKey = value.run_id + pretty(reportData);
+  if (reportKey !== lastReportKey) {
+    const wasOpen = report.dataset.runId === value.run_id && Boolean(report.firstElementChild?.open);
+    report.replaceChildren();
+    report.dataset.runId = value.run_id;
+    if (reportData) {
+      const details = node("details", "context-details");
+      details.open = wasOpen;
+      details.append(node("summary", "", "检查证据、操作与未完成事项"), node("pre", "", pretty(reportData)));
+      report.append(details);
+    }
+    lastReportKey = reportKey;
   }
   const artifacts = $("artifacts"); artifacts.replaceChildren();
   for (const artifact of value.artifacts) {
@@ -268,6 +284,7 @@ function eventHint(event) {
   if (event.type === "network_operation") hint = data.name + " · " + data.elapsed_seconds + " 秒 · " + (data.error || "成功");
   if (event.type === "plan_updated") hint = data.reason || "";
   if (event.type === "model_retry_scheduled") hint = data.delay_seconds + " 秒后重试";
+  if (event.type === "model_error") hint = reasons[data.code] || data.code;
   if (event.type === "context_history_limited") hint = "保留近期交互，省略 " + data.omitted_turns + " 轮旧历史";
   if (data.display_truncated) hint = "长详情已截断";
   return clipped(hint);
@@ -390,7 +407,7 @@ async function poll() {
 }
 function select(run) {
   epoch++; selected = run; cursor = 0; snapshot = null; seen.clear();
-  observedTurn = 0; displayedLogs = 0; lastAnswerKey = ""; lastPlanKey = "";
+  observedTurn = 0; displayedLogs = 0; lastAnswerKey = ""; lastPlanKey = ""; lastReportKey = "";
   lastRulesContent = null;
   $("events").replaceChildren(); $("tool-events").replaceChildren(); $("tools-empty").hidden = false;
   $("logs").replaceChildren(node("p", "console-empty", "等待任务事件…"));

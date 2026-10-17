@@ -49,7 +49,7 @@ class SlowTools(CoreTools):
 
 class LargeTools(CoreTools):
     async def execute(self, call):
-        return ToolResult(True, data="a" * 10000)
+        return ToolResult(True, data="a" * 20000)
 
 
 def call(arguments='{"a":47,"b":58}', id="lookup", name="add_integers"):
@@ -222,9 +222,13 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["tool_calls"], 1)
 
     async def test_empty_and_incomplete_answers_fail(self):
-        for reply in (ModelReply(), ModelReply(content="partial", finish_reason="length")):
-            result = await self.run_model(ScriptModel(reply))
-            self.assertEqual(result["status"], "failed")
+        for reply, status, reason in ((ModelReply(), "failed", "model_empty_response"),
+                                       (ModelReply(content="partial", finish_reason="length"),
+                                        "budget_exceeded", "completion_token_limit")):
+            result = await self.run_model(ScriptModel(reply), config=replace(self.config, max_turns=1))
+            self.assertEqual((result["status"], result["reason"]), (status, reason))
+            self.assertEqual(result["model_calls"], 1)
+            self.assertIsNone(result["answer"])
 
     async def test_key_redacted_everywhere(self):
         secret = "local-test-secret-123"

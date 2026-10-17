@@ -1,3 +1,8 @@
+"""管理模型可见的任务上下文，并将工具调用分发到对应实现。
+
+TaskContext 保存计划和记忆、组装提示词；RunTools 汇总工具声明并路由调用。
+计划与记忆是模型记录的状态，不等于执行器已经验证任务完成。
+"""
 from __future__ import annotations
 
 import copy
@@ -7,6 +12,8 @@ from .contracts import ToolCall, ToolResult
 from .files import FileTools
 
 
+# 发给模型的系统约束；这些字符串参与运行，保持协议和提示词原样。
+# 真正的目录限制、审批和验收还由后端代码强制执行，不能只依靠提示词。
 PRIORITY = (
     "You are a local task agent. For general knowledge questions, answer directly; do not inspect "
     "the workspace merely because one is provided. Inspect files when the user asks about the project "
@@ -31,16 +38,20 @@ PRIORITY = (
 
 
 class TaskContext:
+    # 每次运行独立持有任务、规范快照、计划和记忆，不与其他运行共享状态。
     def __init__(self, task: str, rules: dict, store, max_chars: int):
+        # findings 区分事实/假设并标明来源；unresolved 用于记录尚未解决的问题。
         self.task, self.rules, self.store, self.max_chars = task, rules, store, max_chars
         self.plan: list[dict] = []
         self.memory = {"goal": task, "constraints": [], "progress": [], "findings": [],
                        "artifacts": [], "unresolved": []}
 
     def snapshot(self) -> dict:
+        # 提供当前计划和记忆，供持久化、Web 展示和下一轮提示词使用。
         return {"plan": self.plan, "memory": self.memory}
 
     def schemas(self):
+        # JSON Schema 告诉模型两个状态工具应提交哪些字段；execute 仍会再次校验。
         string = {"type": "string", "minLength": 1}
         strings = {"type": "array", "items": string}
         step = {"type": "object", "properties": {
@@ -61,7 +72,9 @@ class TaskContext:
                                  list(self.memory))]
 
     async def execute(self, call: ToolCall) -> ToolResult:
+        # 更新是整份替换，不是局部合并，因此参数必须包含完整的计划或记忆结构。
         def nonempty(value):
+            # 空字符串和纯空白都不能作为步骤、原因或发现内容。
             return isinstance(value, str) and bool(value.strip())
 
         try:
@@ -83,6 +96,7 @@ class TaskContext:
                         raise ValueError
                     ids.add(step["id"])
                 before = copy.deepcopy(self.plan)
+                # 保存修改前的计划及修改原因，让事件日志可以解释计划为何变化。
                 self.plan = steps
                 self.store.emit("plan_updated", before=before, steps=steps, reason=args["reason"])
             elif call.name == "update_memory":
@@ -108,23 +122,28 @@ class TaskContext:
             return ToolResult(False, error="invalid_state_arguments")
 
     def assemble(self, history: list[list[dict]], recent_turns: int) -> tuple[list[dict], int]:
+        # 每轮重建固定上下文，旧对话被裁剪后仍保留任务、规范、计划和记忆。
         fixed = [{"role": "system", "content": PRIORITY},
                  {"role": "system", "content": "Project rules snapshot:\n" + json.dumps(self.rules, ensure_ascii=False)},
                  {"role": "user", "content": self.task},
                  {"role": "system", "content": "Current plan and task memory:\n" + json.dumps(self.snapshot(), ensure_ascii=False)}]
         recent = history[-recent_turns:]
-        # Whole assistant/tool groups preserve the provider's tool-call protocol.
+        # 按整组 assistant/工具反馈保留历史，避免只留下工具结果或悬空的调用。
         return fixed + [message for group in recent for message in group], len(history) - len(recent)
 
 
 class RunTools:
+    # 统一的工具门面：状态工具交给 context，文件工具交给 files，其余交给 core。
     def __init__(self, core, files: FileTools, context: TaskContext):
+        # core 可能已经组合了 Shell、联网和整数计算工具。
         self.core, self.files, self.context = core, files, context
 
     def schemas(self):
+        # 汇总本次运行实际可用的工具声明，模型看不到未启用的能力。
         return self.core.schemas() + self.files.schemas() + self.context.schemas()
 
     async def execute(self, call):
+        # 文件操作前必须已有计划；该条件由执行器检查，而非仅靠模型自觉遵守。
         if call.name in {"update_plan", "update_memory"}:
             return await self.context.execute(call)
         if call.name in {"list_files", "read_file", "write_file"}:

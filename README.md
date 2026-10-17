@@ -49,8 +49,6 @@ HARNESS_MODEL=服务实际支持的模型标识
 HARNESS_API_KEY=你的 API 密钥
 ```
 
-`HARNESS_BASE_URL` 不包含 `/chat/completions`，远程端点需使用 HTTPS。密钥只保存在本机，不写入 JSON 配置或提交到仓库。
-
 ### 3. 启动 Web 工作台
 
 ```powershell
@@ -92,10 +90,13 @@ python -m harness live-check --env-file .env --config config.example.json
 | `total_timeout_seconds` | 360 | 任务总时限，包含工具、审批及重试等待 |
 | `approval_timeout_seconds` / `shell_timeout_seconds` | 60 / 60 | 审批等待和单条命令执行上限，单位秒 |
 | `recent_history_turns` | 4 | 保留近期完整交互组，规范、计划和任务记忆持续提供 |
+| `max_completion_tokens` / `max_output_chars` | 4096 / 16000 | 单次生成 token 上限与输出字符上限，分别约束 |
 | `checks` | `[]` | 默认不配置结果检查 |
 | `network_enabled` | `false` | 默认关闭联网 |
 
 若模型服务要求 `max_completion_tokens` 参数，将 `completion_token_parameter` 改为 `"max_completion_tokens"`；生成上限数值由 `max_completion_tokens` 配置项控制。
+
+供应商以 `length` 结束响应时，执行器将其识别为生成截断；如尚有轮数，会在原预算内尝试一次精简答复，不重放工具或自动提高配置上限。仍被截断时明确报告预算耗尽。较高的生成上限允许更多输出，也可能增加耗时与用量；已有自定义配置需自行调整并重启服务。
 
 ### 联网搜索与网页读取
 

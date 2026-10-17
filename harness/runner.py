@@ -1,3 +1,8 @@
+"""任务执行主循环：请求模型 → 执行工具 → 回填结果 → 回答或独立验收。
+
+Runner 统一控制总预算、取消、重试和恢复，具体操作委托给工具模块。
+阅读 run 时可先看内部四个辅助函数，再看下方初始化和逐轮执行的主流程。
+"""
 from __future__ import annotations
 
 import asyncio
@@ -26,19 +31,24 @@ LIVE_CHECK_TASK = "先调用 add_integers 计算 47+58，再把工具返回值�
 
 
 class Tools(Protocol):
+    # 工具集接口：schemas 提供模型可见声明，execute 根据一次调用返回结构化结果。
     def schemas(self) -> list[dict]: ...
     async def execute(self, call: ToolCall) -> ToolResult: ...
 
 
 class Halt(Exception):
+    # 内部控制信号，携带可预期的终止状态；最外层捕获后统一写入最终结果。
     def __init__(self, status: Status, reason: str):
+        # reason 是机器可读原因码，供日志和界面解释预算耗尽、取消等情况。
         self.status, self.reason = status, reason
 
 
 class Runner:
+    # 一个实例接收模型和能力依赖；每次 run 的计数、上下文及恢复状态在函数内创建。
     def __init__(self, config: Config, model: Model, *, tools: Tools | None = None,
                  secrets: tuple[str, ...] = (), approve=None, phase=None,
                  network_transport=None, network_dns_check=check_public_dns):
+        # approve 由 Web 注入；未提供时不开放 Shell。phase 用来通知 Web 当前是否在验收。
         config.validate()
         self.config, self.model = config, model
         self.tools = tools if tools is not None else CoreTools()
@@ -50,6 +60,7 @@ class Runner:
 
     async def run(self, task: str, workspace: Path,
                   cancel: asyncio.Event | None = None, *, store: RunStore | None = None) -> dict:
+        # 先检查任务与目录，随后建立记录、能力包装和本次运行独立的预算/状态。
         if not isinstance(task, str) or not task.strip():
             raise ValueError("task must not be empty")
         workspace = workspace.resolve(strict=True)
@@ -65,12 +76,14 @@ class Runner:
                                transport=self.network_transport, dns_check=self.network_dns_check)
         network.save()
         started = time.monotonic()
+        # 使用单调时钟计算时限，避免系统时间调整影响总预算；日志时间另用 UTC。
         deadline = started + config.total_timeout_seconds
         turns = 0
         model_calls = 0
         tool_calls = 0
         usage: dict[str, int] = {}
         used_ids: set[str] = set()
+        # history 按“模型回复 + 对应工具反馈”分组，供 context 按整组裁剪。
         history: list[list[dict]] = []
         context = None
         run_tools = self.tools
@@ -80,7 +93,9 @@ class Runner:
         check_evidence = []
         verification_attempts = 0
         model_repairs = 0
+        concise_recovery = False
         checks = copy.deepcopy(config.checks)
+        # 固定本次验收配置，避免外部修改列表影响正在运行的任务。
         store.write_json("metadata.json", {
             "schema_version": 1, "run_id": store.run_id, "started_at": utc_now(),
             "workspace": str(workspace), "task": task[:config.max_input_chars],
@@ -92,12 +107,14 @@ class Runner:
         store.emit("run_started", provider=config.provider)
 
         def check() -> None:
+            # 在关键步骤前后共同检查取消和总时限，通过 Halt 跳到统一收尾路径。
             if cancel.is_set():
                 raise Halt(Status.CANCELLED, "user_cancelled")
             if time.monotonic() >= deadline:
                 raise Halt(Status.BUDGET_EXCEEDED, "total_timeout")
 
         async def controlled(operation: Awaitable[T], timeout: float, code: str) -> T:
+            # 同时等待操作完成和用户取消，并取“局部时限/剩余总时限”中较短的一个。
             remaining = deadline - time.monotonic()
             job = asyncio.ensure_future(operation)
             cancelled = asyncio.create_task(cancel.wait())
@@ -112,6 +129,7 @@ class Runner:
                     raise ModelError(code, retryable=code == "model_request_timeout")
                 return job.result()
             finally:
+                # 等待被取消的操作完成清理；若进程树无法确认退出，必须升级为运行失败。
                 for pending in (job, cancelled):
                     if not pending.done():
                         pending.cancel()
@@ -121,6 +139,7 @@ class Runner:
                     raise Halt(Status.FAILED, "process_termination_unconfirmed")
 
         def finish(status: Status, reason: str, answer: str | None = None) -> dict:
+            # 所有终止路径共用：汇总回答、预算、证据、未决副作用和未完成计划并落盘。
             for item in check_evidence:
                 if item.get("status") == "running":
                     item.update(status="interrupted", passed=False, error="check_interrupted")
@@ -145,6 +164,7 @@ class Runner:
             return result
 
         async def dispatch(call: ToolCall, purpose="task") -> ToolResult:
+            # 工具和验收共用的执行入口：计数 → 记录 → 恢复检查 → 执行 → 保存反馈。
             nonlocal tool_calls
             check()
             if tool_calls >= config.max_tool_calls:
@@ -154,12 +174,14 @@ class Runner:
             record = {"call_id": call.id, "name": call.name, "purpose": purpose,
                       "ok": None, "error": "operation_interrupted_or_outcome_unknown"}
             operations.append(record)
+            # 先登记“结果未知”，即使执行中断，报告仍能反映这次操作曾被请求。
             result = recovery.blocked(call)
-            # A configured check is explicitly repeatable, but still needs a fresh shell approval.
+            # 配置检查允许重复执行，但仍需新审批；已被用户拒绝的命令不会因此放行。
             if purpose == "verification" and result and result.error == "side_effect_uncertain_no_replay":
                 result = None
             if result is None:
                 try:
+                    # Shell 外层时限要容纳审批等待与命令执行；各阶段仍受总时限约束。
                     timeout = (config.approval_timeout_seconds + config.shell_timeout_seconds + 1
                                if call.name == "run_command" and self.approve else
                                config.search_timeout_seconds if call.name == "web_search" else
@@ -176,6 +198,7 @@ class Runner:
                 except Exception:
                     result = ToolResult(False, error="tool_execution_error")
             recovery.observe(call, result)
+            # 操作证据由真实返回值提取；模型声称“已创建”的文件不直接列为产物。
             record.update(ok=result.ok, error=result.error)
             if isinstance(result.data, dict):
                 record["evidence"] = {key: value for key, value in result.data.items()
@@ -190,6 +213,7 @@ class Runner:
             return result
 
         try:
+            # 第一阶段：加载规范快照、初始化计划记忆，并组合本次可用的工具。
             check()
             files = FileTools(workspace, config.max_file_bytes, config.max_directory_entries)
             try:
@@ -206,7 +230,9 @@ class Runner:
                     if self.approve else network)
             run_tools = RunTools(core, files, context)
             recovery = Recovery(files)
+            # 工具组合顺序：RunTools → 状态/文件，或 ShellTools → NetworkTools → 基础工具。
             for turn in range(1, config.max_turns + 1):
+                # 第二阶段：组装当前上下文；历史可裁剪，任务、规范、计划和记忆始终保留。
                 check()
                 turns = turn
                 messages, dropped = context.assemble(history, config.recent_history_turns)
@@ -216,7 +242,8 @@ class Runner:
                         + json.dumps(checks, ensure_ascii=False) + ". On your final answer the executor runs these checks. "
                         "If they fail, repair within remaining budgets and answer again. Each shell check needs approval. "
                         "Previous check evidence: " + json.dumps(check_evidence, ensure_ascii=False)})
-                final_response_only = turn == config.max_turns
+                final_response_only = turn == config.max_turns or concise_recovery
+                # 预留最后一轮用于最终回答；生成截断后的恢复轮也禁止继续请求工具。
                 schemas = [] if final_response_only else run_tools.schemas()
                 messages.insert(1, {"role": "system", "content": (
                     f"Run budget: model response {turn} of {config.max_turns}. "
@@ -227,6 +254,15 @@ class Runner:
                        "If you have enough information, answer now without more tools. "
                        "The last response is reserved for a final answer, not tool execution.")
                 )})
+                if concise_recovery:
+                    # 上轮触及生成上限后，保持原 token 上限，要求用已有证据给出简短回答。
+                    messages.insert(1, {"role": "system", "content": (
+                        "The previous response reached the generation limit and was discarded; none of its tools ran. "
+                        f"This request keeps the same {config.max_completion_tokens} completion-token cap. "
+                        "Give a concise final answer using existing observations, preferably within 500 Chinese "
+                        "characters or 250 English words. Prioritize the conclusion and key sources; "
+                        "state missing evidence and unfinished work. Do not request tools or repeat the full analysis."
+                    )})
                 if final_response_only:
                     store.emit("final_response_requested", turn=turn, max_turns=config.max_turns)
                 if dropped:
@@ -236,6 +272,7 @@ class Runner:
                 if request_size > config.max_input_chars:
                     raise Halt(Status.BUDGET_EXCEEDED, "input_char_limit")
                 reply: ModelReply
+                # 请求重试不会增加 turn，但会消耗 model_calls 和总时限。
                 for attempt in range(config.max_retries + 1):
                     check()
                     if model_calls >= config.max_model_calls:
@@ -251,7 +288,21 @@ class Runner:
                                              "finish_reason": reply.finish_reason}], "usage": reply.usage}, config)
                         break
                     except ModelError as error:
-                        store.emit("model_error", code=error.code, retryable=error.retryable)
+                        # 格式修复进入新一轮；暂时性网络错误在本轮退避重试，二者预算独立。
+                        for key, value in error.usage.items():
+                            usage[key] = usage.get(key, 0) + value
+                        store.emit("model_error", code=error.code, retryable=error.retryable,
+                                   finish_reason=error.finish_reason, usage=error.usage,
+                                   max_completion_tokens=config.max_completion_tokens)
+                        if error.code == "model_completion_token_limit":
+                            # 截断回复中的工具一律不执行；若已在最终回答轮，则以预算耗尽结束。
+                            if final_response_only:
+                                raise Halt(Status.BUDGET_EXCEEDED, "completion_token_limit") from None
+                            concise_recovery = True
+                            store.emit("model_concise_answer_requested", turn=turn,
+                                       max_completion_tokens=config.max_completion_tokens)
+                            reply = None
+                            break
                         if error.code in REPAIRABLE_MODEL_ERRORS and model_repairs < config.max_model_repairs and not final_response_only:
                             model_repairs += 1
                             store.emit("model_repair_requested", code=error.code, repair=model_repairs)
@@ -267,7 +318,7 @@ class Runner:
                 if reply is None:
                     continue
                 check()
-                # Protect every adapter, including injected/simulated ones.
+                # 对所有适配器再次做边界检查，测试替身或注入实现也不能绕过限制。
                 message = reply.message()
                 if len(json.dumps(message, ensure_ascii=False)) > config.max_output_chars:
                     raise ModelError("model_output_limit")
@@ -277,6 +328,7 @@ class Runner:
                     raise ModelError("model_tool_call_limit")
                 ids = [call.id for call in reply.tool_calls]
                 if len(set(ids)) != len(ids) or used_ids.intersection(ids):
+                    # 工具 ID 在整个运行内必须唯一，否则反馈可能绑定到错误的调用。
                     if model_repairs >= config.max_model_repairs or final_response_only:
                         raise ModelError("duplicate_tool_call_id")
                     model_repairs += 1
@@ -289,15 +341,17 @@ class Runner:
                         usage[key] = usage.get(key, 0) + value
                 store.emit("model_responded", turn=turn, message=message, usage=reply.usage)
                 if final_response_only and reply.tool_calls:
-                    # Enforce the reserved response even for an adapter that ignores its tool list.
+                    # 即使适配器无视空工具列表仍返回调用，执行器也会拒绝，保住最终回答轮。
                     store.emit("tool_dispatch_blocked", reason="final_response_only")
                     raise Halt(Status.BUDGET_EXCEEDED, "turn_limit")
                 group = [message]
                 history.append(group)
                 if not reply.tool_calls:
+                    # 第三阶段：无工具调用代表模型提交最终回答；是否验证成功由检查决定。
                     if not reply.content or not reply.content.strip():
                         raise ModelError("model_empty_response")
                     if not checks:
+                        # 没有配置检查时只能标记为未验证，不能凭模型回答标记 completed。
                         return finish(Status.UNVERIFIED, "model_finished_without_verifier", reply.content)
                     verification_attempts += 1
                     self.phase("verifying")
@@ -316,6 +370,7 @@ class Runner:
                                     + json.dumps(check_evidence, ensure_ascii=False)}])
                     continue
                 for call in reply.tool_calls:
+                    # 顺序执行本轮工具，再将对应 tool_call_id 的反馈作为同组历史交回模型。
                     result = await dispatch(call)
                     group.append({"role": "tool", "tool_call_id": call.id,
                                      "content": json.dumps(result.wire(), ensure_ascii=False)})
@@ -325,9 +380,9 @@ class Runner:
         except ModelError as error:
             return finish(Status.FAILED, error.code)
         except asyncio.CancelledError:
-            # Preserve a terminal record when the embedding application cancels the task.
+            # 宿主直接取消协程时也保存终态，然后继续向上传播取消信号。
             finish(Status.CANCELLED, "task_cancelled")
             raise
         except Exception:
-            # Never persist a raw exception which might contain transport credentials.
+            # 未知异常只记录固定错误码，避免原始异常中的传输凭据进入运行记录。
             return finish(Status.FAILED, "internal_error")

@@ -1,3 +1,8 @@
+"""命令行入口：运行任务、检查真实模型工具链、查看记录或启动本地 Web。
+
+调用链为 main → execute → Runner.run；serve 子命令转入 web.serve。
+CLI 运行任务时没有审批代理，因此不开放 Shell，命令审批需通过 Web 完成。
+"""
 from __future__ import annotations
 
 import argparse
@@ -16,10 +21,12 @@ from .processes import process_alive
 
 
 def print_json(value) -> None:
+    # 终端输出统一为便于阅读的 JSON，中文不转义为 Unicode 编码。
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
 async def execute(args, config, *, live: bool = False) -> dict:
+    # 收集密钥供日志脱敏；Ctrl+C 转成取消事件，让 Runner 有机会收尾并保存结果。
     secrets = tuple(os.environ.get(name, "") for name in ("HARNESS_API_KEY", "TAVILY_API_KEY"))
     model = OpenAICompatibleModel(config, os.environ.get("HARNESS_API_KEY", ""))
     cancel = asyncio.Event()
@@ -30,12 +37,13 @@ async def execute(args, config, *, live: bool = False) -> dict:
         result = await Runner(config, model, secrets=secrets).run(
             LIVE_CHECK_TASK if live else args.task, Path(args.workspace), cancel)
     finally:
+        # 还原信号处理函数，避免影响嵌入调用或后续命令。
         signal.signal(signal.SIGINT, previous)
     return result
 
 
 def check_live_evidence(result: dict) -> bool:
-    """Check tool feedback, subsequent requests, and final answer; not merely a chat."""
+    """检查真实模型是否按顺序调用计算工具、读到反馈并在最终回答中使用结果。"""
     events = [json.loads(line) for line in
               (Path(result["run_directory"]) / "events.jsonl").read_text(encoding="utf-8").splitlines()]
     lookups = [e for e in events if e["type"] == "tool_responded"
@@ -49,6 +57,7 @@ def check_live_evidence(result: dict) -> bool:
         return False
     total_requested = next(e for e in events if e["type"] == "tool_requested"
                            and e["data"]["call_id"] == totals[-1]["data"]["call_id"])
+    # 不能只检查最终答案含 315：还需证明模型先读到 105，再请求乘法并读到 315。
     dependent_request = any(e["type"] == "model_requested"
                             and lookups[0]["sequence"] < e["sequence"] < total_requested["sequence"]
                             and any(m["role"] == "tool" and '105' in m["content"]
@@ -64,6 +73,7 @@ def check_live_evidence(result: dict) -> bool:
 
 
 def parser() -> argparse.ArgumentParser:
+    # 在这里集中声明子命令及参数；解析参数本身不会加载配置或启动服务。
     root = argparse.ArgumentParser(description="Local agent harness with Web, rules, plans, memory and bounded files (no shell)")
     commands = root.add_subparsers(dest="command", required=True)
     for name in ("run", "live-check"):
@@ -85,6 +95,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 退出码：0 为正常结束，1 为执行/验收失败，2 为配置或 IO 错误，130 为取消。
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     args = parser().parse_args(argv)
@@ -96,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             asyncio.run(serve(load_config(args.config, args.env_file), args.port))
             return 0
         if args.command == "inspect":
+            # inspect 只读取历史记录，不恢复任务、不重放命令，也不复用旧审批。
             if not RUN_ID.fullmatch(args.run_id):
                 raise ValueError("run_id must be a date + daily sequence ID or a legacy UUID")
             folder = args.runs_dir.resolve() / args.run_id
@@ -105,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 metadata = json.loads((folder / "metadata.json").read_text(encoding="utf-8"))
                 running = False
+                # 没有终态文件时，PID 存活仅作为运行中提示，不能证明仍是原来的任务。
                 if type(metadata.get("owner_pid")) is int and metadata["owner_pid"] > 0:
                     running = process_alive(metadata["owner_pid"])
                 print_json({"run_id": metadata["run_id"], "status": "running" if running else "interrupted",
@@ -123,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if passed else 1
         return 0 if result["status"] in {"completed", "unverified"} else (130 if result["status"] == "cancelled" else 1)
     except (ValueError, TypeError, OSError) as error:
-        # Keep parsing/IO errors safe; selected validation messages are authored here.
+        # 配置错误仅显示经过脱敏的校验信息；IO 异常使用固定文本，避免泄漏底层细节。
         if type(error) is ValueError:
             message = str(error)
             for name in ("HARNESS_API_KEY", "TAVILY_API_KEY"):
