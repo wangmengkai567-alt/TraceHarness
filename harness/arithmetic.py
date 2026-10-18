@@ -1,4 +1,4 @@
-"""最基础的整数计算工具，以及所有工具通用的输出长度限制。
+"""有界整数加法与乘法工具。
 
 schemas 用来向模型声明调用格式，execute 负责实际计算并返回 ToolResult。
 """
@@ -9,7 +9,7 @@ import json
 from .contracts import ToolCall, ToolResult
 
 
-class CoreTools:
+class ArithmeticTools:
     """只进行有界整数运算，不使用 eval，也不访问文件、网络或 Shell。"""
 
     def schemas(self) -> list[dict]:
@@ -37,19 +37,3 @@ class CoreTools:
             return ToolResult(False, error="invalid_integer_arguments")
         value = args["a"] + args["b"] if call.name == "add_integers" else args["a"] * args["b"]
         return ToolResult(True, data={"value": value})
-
-
-def bound_result(result: ToolResult, limit: int) -> ToolResult:
-    # 限制序列化后的字符数，避免超大工具反馈耗尽下一轮输入预算。
-    text = json.dumps(result.wire(), ensure_ascii=False)
-    if len(text) <= limit:
-        return result
-    # 截断的是数据预览，再重新序列化；不直接截断 JSON，以免得到无效协议内容。
-    preview_size = max(0, limit // 2 - 100)
-    bounded = ToolResult(result.ok, data=text[:preview_size],
-                         error="output_truncated", truncated=True)
-    while len(json.dumps(bounded.wire(), ensure_ascii=False)) > limit and preview_size:
-        preview_size //= 2
-        bounded = ToolResult(result.ok, data=text[:preview_size],
-                             error="output_truncated", truncated=True)
-    return bounded

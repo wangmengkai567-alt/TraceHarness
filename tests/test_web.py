@@ -10,7 +10,7 @@ import httpx
 from harness.config import Config
 from harness.contracts import ModelReply, ToolCall
 from harness.store import RunStore
-from harness.tools import CoreTools
+from harness.arithmetic import ArithmeticTools
 from harness.web import DETAIL_LIMIT, MAX_BODY, PAGE_SIZE, RunManager, create_app
 from tests.test_runner import ScriptModel, SlowModel
 from tests.test_stage_two import action, plan
@@ -104,7 +104,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         manager = self.manager
         dispatched = []
 
-        class CancelAfterFirst(CoreTools):
+        class CancelAfterFirst(ArithmeticTools):
             async def execute(self, call):
                 dispatched.append(call.id)
                 result = await super().execute(call)
@@ -114,7 +114,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.model = ScriptModel(ModelReply(tool_calls=(ToolCall("one", "add_integers", '{"a":1,"b":2}'),
                                                        ToolCall("two", "add_integers", '{"a":3,"b":4}')),
                                             finish_reason="tool_calls"))
-        with patch("harness.runner.CoreTools", CancelAfterFirst):
+        with patch("harness.runner.ArithmeticTools", CancelAfterFirst):
             run_id = await self.start()
             await self.finish()
         self.assertEqual(dispatched, ["one"])

@@ -4,6 +4,9 @@ import json
 from harness.contracts import ModelError, ModelReply, ToolCall
 
 
+TOOL_LOOP_TASK = "Use tools to add 47 and 58, multiply the returned value by 3, and report the result."
+
+
 class ToolLoopFake:
     async def complete(self, messages, tools):
         results = [message for message in messages if message["role"] == "tool"]

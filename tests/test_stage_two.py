@@ -120,11 +120,11 @@ class StageTwoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "unverified")
         self.assertEqual((self.root / "summary.txt").read_bytes(), b"42\nSource: input.txt\n")
         directory = Path(result["run_directory"])
-        events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+        events = [json.loads(line) for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()]
         self.assertEqual(sum(e["type"] == "plan_updated" for e in events), 3)
         self.assertTrue(any(e["type"] == "context_history_limited" for e in events))
-        self.assertEqual(json.loads((directory / "state.json").read_text())["memory"], memory)
-        self.assertEqual(json.loads((directory / "rules.json").read_text())["content"], "Always include Source: input.txt")
+        self.assertEqual(json.loads((directory / "state.json").read_text(encoding="utf-8"))["memory"], memory)
+        self.assertEqual(json.loads((directory / "rules.json").read_text(encoding="utf-8"))["content"], "Always include Source: input.txt")
         next_model = ScriptModel(ModelReply(content="done"))
         await Runner(self.config, next_model).run("next", self.root)
         self.assertIn("changed rule", json.dumps(next_model.requests[0]))

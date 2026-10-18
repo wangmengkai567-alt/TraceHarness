@@ -1,10 +1,19 @@
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
+
+from harness import cli
+from harness.config import Config
+from harness.contracts import ModelReply
+from tests.fakes import ToolLoopFake
+from tests.test_runner import ScriptModel
 
 
 class CLITests(unittest.TestCase):
@@ -32,17 +41,51 @@ class CLITests(unittest.TestCase):
     def test_live_check_requires_real_model_key(self):
         config = self.folder / "config.json"
         config.write_text(json.dumps({"provider": "openai_compatible", "model": "local-model",
-                                      "base_url": "http://127.0.0.1:1234/v1"}), encoding="utf-8")
+                                      "base_url": "http://127.0.0.1:1234/v1"}), encoding="utf-8", newline="\n")
         run = self.command("live-check", "--config", str(config))
         self.assertEqual(run.returncode, 2)
         self.assertIn("HARNESS_API_KEY", run.stdout)
         self.assertFalse((self.folder / "runs").exists())
 
+    def test_live_check_reports_pass_and_failure(self):
+        config = Config(model="test-model", base_url="https://test.invalid/v1",
+                        runs_dir=str(self.folder / "runs"))
+        for model, passed in ((ToolLoopFake(), True), (ScriptModel(ModelReply(content="315")), False)):
+            with self.subTest(passed=passed):
+                output = io.StringIO()
+                with (patch.dict(os.environ, self.env, clear=True),
+                      patch("harness.cli.load_config", return_value=config),
+                      patch("harness.cli.OpenAICompatibleModel", return_value=model),
+                      redirect_stdout(output)):
+                    code = cli.main(["live-check", "--workspace", str(self.folder)])
+                self.assertEqual(code, 0 if passed else 1)
+                result, end = json.JSONDecoder().raw_decode(output.getvalue())
+                report = json.loads(output.getvalue()[end:])
+                self.assertEqual(result["status"], "unverified")
+                self.assertEqual(report["live_check_passed"], passed)
+
+    def test_run_preserves_user_task_without_running_diagnostics(self):
+        config = Config(model="test-model", base_url="https://test.invalid/v1",
+                        runs_dir=str(self.folder / "runs"))
+        output = io.StringIO()
+        with (patch.dict(os.environ, self.env, clear=True),
+              patch("harness.cli.load_config", return_value=config),
+              patch("harness.cli.OpenAICompatibleModel", return_value=ScriptModel(ModelReply(content="done"))),
+              patch("harness.cli.diagnostics.run_live_check", side_effect=AssertionError("unexpected diagnosis")),
+              patch("harness.cli.diagnostics.check_live_evidence", side_effect=AssertionError("unexpected diagnosis")),
+              redirect_stdout(output)):
+            code = cli.main(["run", "--workspace", str(self.folder), "--task", "Describe this workspace."])
+        self.assertEqual(code, 0)
+        result = json.loads(output.getvalue())
+        metadata = json.loads((Path(result["run_directory"]) / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["task"], "Describe this workspace.")
+        self.assertEqual(result["tool_calls"], 0)
+
     def test_inspect_missing_terminal_and_invalid_run_id(self):
         run_id = "a" * 32
         folder = self.folder / "runs" / run_id
         folder.mkdir(parents=True)
-        (folder / "metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
+        (folder / "metadata.json").write_text(json.dumps({"run_id": run_id}), encoding="utf-8", newline="\n")
         result = self.command("inspect", run_id)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout)["status"], "interrupted")

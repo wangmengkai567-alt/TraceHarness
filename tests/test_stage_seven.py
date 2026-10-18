@@ -14,7 +14,7 @@ from harness.contracts import ModelReply, ToolCall
 from harness.runner import Runner
 from harness.search import NetworkError, NetworkTools, check_public_dns, public_url
 from harness.store import RunStore
-from harness.tools import CoreTools
+from harness.arithmetic import ArithmeticTools
 from harness.web import RunManager
 
 
@@ -45,7 +45,7 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
             if request.url.path == "/search":
                 return httpx.Response(200, json={"results": [{"url": URL, "title": "Article", "content": "short snippet"}]})
             return httpx.Response(200, json={"results": [{"url": URL, "raw_content": self.raw}]})
-        return NetworkTools(CoreTools(), replace(self.config, **overrides), RunStore(self.root / "runs", ("secret-key",)),
+        return NetworkTools(ArithmeticTools(), replace(self.config, **overrides), RunStore(self.root / "runs", ("secret-key",)),
                             "secret-key", transport=httpx.MockTransport(handler or default), dns_check=public_dns)
 
     async def test_search_then_read_all_chunks_preserves_evidence(self):

@@ -13,16 +13,16 @@ from pathlib import Path
 from .contracts import ToolResult
 from .files import FileTools
 from .processes import run_process
-from .tools import CoreTools
+from .arithmetic import ArithmeticTools
 
 
-class ShellTools(CoreTools):
+class ShellTools:
     # 通过组合 core 保留其他工具，只有 run_command 在这里处理。
     def __init__(self, workspace, config, approve, emit, cancel, core=None):
         # Windows 使用系统 PowerShell，其他平台使用 /bin/sh；工作目录由运行入口指定。
         self.workspace, self.config = str(workspace), config
         self.approve, self.emit, self.cancel = approve, emit, cancel
-        self.core = core if core is not None else CoreTools()
+        self.core = core if core is not None else ArithmeticTools()
         self.shell = (str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")
                       if os.name == "nt" else "/bin/sh")
 

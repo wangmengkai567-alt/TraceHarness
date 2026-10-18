@@ -77,6 +77,8 @@ python -m harness live-check --env-file .env --config config.example.json
 
 成功时输出 `live_check_passed: true`。此命令调用真实模型，会产生 API 用量；配置缺失时明确报错。
 
+固定诊断场景与事件证据检查位于 [`diagnostics.py`](harness/diagnostics.py)，CLI 负责调用和展示，普通任务不会自动运行诊断。计算工具实现位于 [`arithmetic.py`](harness/arithmetic.py)，通用工具反馈长度限制位于 [`tool_results.py`](harness/tool_results.py)。
+
 ## 配置
 
 运行参数见 [config.example.json](config.example.json)，通过 `--config` 指定。模型连接信息优先使用已有进程环境，其次为显式加载的 `.env`、JSON 和默认值；不会自动寻找父目录的 `.env`。修改配置后需重启服务，新任务才会采用新值。

@@ -17,7 +17,8 @@ from .config import Config
 from .contracts import ModelError, ModelReply, Status, ToolCall, ToolResult
 from .models import Model, parse_reply
 from .store import RunStore, utc_now
-from .tools import CoreTools, bound_result
+from .arithmetic import ArithmeticTools
+from .tool_results import bound_result
 from .files import FileError, FileTools
 from .context import RunTools, TaskContext
 from .processes import TerminationUnconfirmed
@@ -27,7 +28,6 @@ from .verification import verify
 from .search import NetworkTools, check_public_dns
 
 T = TypeVar("T")
-LIVE_CHECK_TASK = "先调用 add_integers 计算 47+58，再把工具返回值交给 multiply_integers 乘以 3，报告最终结果。"
 
 
 class Tools(Protocol):
@@ -51,7 +51,7 @@ class Runner:
         # approve 由 Web 注入；未提供时不开放 Shell。phase 用来通知 Web 当前是否在验收。
         config.validate()
         self.config, self.model = config, model
-        self.tools = tools if tools is not None else CoreTools()
+        self.tools = tools if tools is not None else ArithmeticTools()
         self.secrets = secrets
         self.approve = approve
         self.phase = phase if phase is not None else lambda value: None

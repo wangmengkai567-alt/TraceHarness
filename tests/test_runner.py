@@ -8,12 +8,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from harness.cli import check_live_evidence
+from harness.arithmetic import ArithmeticTools
 from harness.config import Config
 from harness.contracts import ModelError, ModelReply, ToolCall, ToolResult
-from tests.fakes import ToolLoopFake
-from harness.runner import LIVE_CHECK_TASK, Runner
-from harness.tools import CoreTools, bound_result
+from harness.runner import Runner
+from harness.tool_results import bound_result
+from tests.fakes import TOOL_LOOP_TASK, ToolLoopFake
 
 
 class ScriptModel:
@@ -42,12 +42,12 @@ class SlowModel:
             self.stopped.set()
 
 
-class SlowTools(CoreTools):
+class SlowTools(ArithmeticTools):
     async def execute(self, call):
         await asyncio.sleep(10)
 
 
-class LargeTools(CoreTools):
+class LargeTools(ArithmeticTools):
     async def execute(self, call):
         return ToolResult(True, data="a" * 20000)
 
@@ -63,7 +63,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.workspace = Path(self.tmp.name)
         self.config = Config(model="test-model", base_url="https://test.invalid/v1", runs_dir=str(self.workspace / "runs"), retry_base_seconds=0.01)
 
-    async def run_model(self, model, *, config=None, tools=None, cancel=None, secrets=(), task=LIVE_CHECK_TASK):
+    async def run_model(self, model, *, config=None, tools=None, cancel=None, secrets=(), task=TOOL_LOOP_TASK):
         return await Runner(config or self.config, model, tools=tools, secrets=secrets).run(
             task, self.workspace, cancel)
 
@@ -77,8 +77,15 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["verified"])
         self.assertEqual((result["turns"], result["tool_calls"]), (3, 2))
         self.assertIn("315", result["answer"])
-        self.assertTrue(check_live_evidence(result))
         events = self.events(result)
+        requests = [e["data"]["messages"] for e in events if e["type"] == "model_requested"]
+        self.assertFalse(any(message["role"] == "tool" for message in requests[0]))
+        self.assertEqual([messages[-1]["role"] for messages in requests[1:]], ["tool", "tool"])
+        self.assertEqual([json.loads(messages[-1]["content"])["data"]["value"]
+                          for messages in requests[1:]], [105, 315])
+        multiply = next(e for e in events if e["type"] == "tool_requested"
+                        and e["data"]["name"] == "multiply_integers")
+        self.assertEqual(json.loads(multiply["data"]["arguments"]), {"a": 105, "b": 3})
         self.assertEqual([e["sequence"] for e in events], list(range(1, len(events) + 1)))
         self.assertEqual(events[-1]["data"], result)
         self.assertEqual(json.loads((Path(result["run_directory"]) / "result.json")
@@ -93,7 +100,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "unverified")
 
     async def test_invalid_json_and_unknown_tool(self):
-        tools = CoreTools()
+        tools = ArithmeticTools()
         for arguments in ('{', '[]', 'null'):
             self.assertFalse((await tools.execute(ToolCall("a", "add_integers", arguments))).ok)
         self.assertEqual((await tools.execute(ToolCall("b", "run_shell", '{}'))).error, "unknown_tool")

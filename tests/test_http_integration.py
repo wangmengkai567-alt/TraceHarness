@@ -6,11 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness.cli import check_live_evidence
 from harness.config import Config
 from harness.models import OpenAICompatibleModel
-from tests.fakes import ToolLoopFake
-from harness.runner import LIVE_CHECK_TASK, Runner
+from harness.runner import Runner
+from tests.fakes import TOOL_LOOP_TASK, ToolLoopFake
 
 
 class HTTPIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -53,10 +52,12 @@ class HTTPIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             base_url=f"http://127.0.0.1:{port}/v1", runs_dir=str(Path(tmp) / "runs"),
                             retry_base_seconds=0.01)
             model = OpenAICompatibleModel(config, "dummy-local-key")
-            result = await Runner(config, model, secrets=("dummy-local-key",)).run(LIVE_CHECK_TASK, Path(tmp))
+            result = await Runner(config, model, secrets=("dummy-local-key",)).run(TOOL_LOOP_TASK, Path(tmp))
             self.assertEqual(errors, [])
             self.assertEqual((result["status"], result["model_calls"], result["tool_calls"]), ("unverified", 4, 2))
-            self.assertTrue(check_live_evidence(result))
+            self.assertIn("315", result["answer"])
+            self.assertEqual([json.loads(payload["messages"][-1]["content"])["data"]["value"]
+                              for payload in requests[2:]], [105, 315])
             self.assertEqual(result["usage"], {"total_tokens": 30})
             self.assertEqual(requests[0], requests[1])
             self.assertEqual(requests[-1]["messages"][-1]["role"], "tool")
@@ -86,7 +87,7 @@ class HTTPIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             base_url=f"http://127.0.0.1:{port}/v1", runs_dir=str(Path(tmp) / "runs"))
             cancel = asyncio.Event()
             task = asyncio.create_task(Runner(config, OpenAICompatibleModel(config, "dummy-key"))
-                                       .run(LIVE_CHECK_TASK, Path(tmp), cancel))
+                                       .run(TOOL_LOOP_TASK, Path(tmp), cancel))
             try:
                 await asyncio.wait_for(entered.wait(), 15)
                 cancel.set()
