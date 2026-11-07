@@ -1,7 +1,7 @@
 """仅监听本机回环地址的 FastAPI 服务，同时提供页面、任务 API 和命令审批。
 
 请求入口为 create_app，业务分发交给 RunManager，实际任务由 Runner 执行。
-运行与审批状态由同一个 asyncio 事件循环管理；历史任务只读，不自动恢复。
+运行、审批与澄清状态由同一个 asyncio 事件循环管理；历史任务只读，不自动恢复。
 """
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ from .workspace import input_names, ordinary
 from .files import FileError, digest
 from .sandbox import recover
 from .processes import TerminationUnconfirmed
+from .contracts import ToolResult
+from .clarification import MAX_ANSWER_CHARS
 from urllib.parse import parse_qs, quote
 
 STATIC = Path(__file__).with_name("static")
@@ -54,6 +56,10 @@ class ActiveRun:
     # approval 是前端可见的审批内容，decision 是后台等待用户决定的 Future。
     decision: asyncio.Future | None = None
     approval_deadline: float = 0
+    question: dict | None = None
+    # 回答与命令审批使用独立 Future，不能交叉授权。
+    answer: asyncio.Future | None = None
+    question_deadline: float = 0
 
 
 def read_json(path: Path, fallback=None):
@@ -95,7 +101,7 @@ class RunManager:
         return folder
 
     def current(self, run_id: str) -> ActiveRun:
-        # 取消与审批只允许操作当前仍在执行的任务，历史任务不能接收新决定。
+        # 取消、审批和回答只允许操作当前仍在执行的任务。
         record = self.active
         if not record or record.store.run_id != run_id or not record.job or record.job.done():
             raise APIError(409, "run_not_active")
@@ -150,6 +156,7 @@ class RunManager:
         try:
             runner = Runner(self.config, model, secrets=self.secrets,
                             approve=lambda spec: self.request_approval(record, spec),
+                            ask=lambda call_id, question, duration: self.request_question(record, call_id, question, duration),
                             phase=lambda value: setattr(record, "status", value))
             result = await runner.run(
                 task, workspace, record.cancel, store=record.store, input_files=names)
@@ -162,6 +169,54 @@ class RunManager:
             # 未处理的 IO/服务商异常只返回固定错误码，避免将原始异常写入界面或日志。
             record.status = "failed"
             record.store.emit("web_run_error", code="run_start_or_storage_error")
+
+    async def request_question(self, record: ActiveRun, call_id: str, question: str, duration: float):
+        previous_status = record.status
+        record.question = {"run_id": record.store.run_id, "question_id": uuid4().hex,
+                           "tool_call_id": call_id, "question": question, "status": "pending",
+                           "asked_at": utc_now(), "wait_timeout_seconds": duration,
+                           "max_answer_chars": MAX_ANSWER_CHARS}
+        record.question_deadline = time.monotonic() + duration
+        record.answer = asyncio.get_running_loop().create_future()
+        record.status = "awaiting_user"
+        record.store.write_json("question.json", record.question)
+        record.store.emit("user_question_requested", **record.question)
+        try:
+            answer = await asyncio.shield(record.answer)
+            return ToolResult(True, data={"question_id": record.question["question_id"], "answer": answer})
+        except asyncio.CancelledError:
+            if record.question["status"] == "pending":
+                state = ("expired" if not record.cancel.is_set()
+                         and time.monotonic() >= record.question_deadline else "cancelled")
+                record.question.update(status=state, closed_at=utc_now())
+                record.store.write_json("question.json", record.question)
+                record.store.emit("user_question_" + state, **record.question)
+            raise
+        finally:
+            if not record.answer.done():
+                record.answer.cancel()
+            record.status = previous_status
+
+    async def respond(self, run_id: str, question_id: str, body: dict):
+        record = self.current(run_id)
+        if (set(body) != {"answer"} or not isinstance(body["answer"], str)
+                or not body["answer"].strip() or len(body["answer"]) > MAX_ANSWER_CHARS):
+            raise APIError(400, "invalid_answer")
+        question = record.question
+        if (record.cancel.is_set() or record.status != "awaiting_user" or not question
+                or question["question_id"] != question_id or question["status"] != "pending"
+                or record.answer is None or record.answer.done()
+                or time.monotonic() >= record.question_deadline):
+            raise APIError(409, "question_not_pending")
+        feedback = ToolResult(True, data={"question_id": question_id, "answer": body["answer"]})
+        if len(json.dumps(feedback.wire(), ensure_ascii=False)) > self.config.max_output_chars:
+            raise APIError(400, "answer_output_limit")
+        # Mark received before waking the waiter; duplicate requests cannot both succeed.
+        question.update(status="answered", answer=body["answer"], answered_at=utc_now())
+        record.store.write_json("question.json", question)
+        record.store.emit("user_answer_received", **question)
+        record.answer.set_result(body["answer"])
+        return {"accepted": True}
 
     async def request_approval(self, record: ActiveRun, spec: dict):
         # Shell 调用暂停在这里：发布一次性审批内容，等待 decide 设置 Future 的结果。
@@ -319,7 +374,8 @@ class RunManager:
                            "note": ("仅所配置检查项通过，不代表全部需求已验证。" if result and result.get("verified") else
                                     "配置检查未全部通过；请查看检查证据。" if result and result.get("checks") else
                                     "尚未配置或尚未执行结果检查；模型自检可查看工具轨迹。")},
-                "approval": active.approval if live else None}
+                "approval": active.approval if live else None,
+                "question": (active.question if live else None)}
 
     async def dispatch(self, method: str, path: str, body=None):
         # 业务路由：运行列表/详情、启动、事件增量、取消、审批；不负责 HTTP 安全校验。
@@ -377,6 +433,8 @@ class RunManager:
             return await self.cancel(run_id)
         if method == "POST" and action and action.startswith("approvals/"):
             return await self.decide(run_id, action.removeprefix("approvals/"), body)
+        if method == "POST" and action and action.startswith("questions/"):
+            return await self.respond(run_id, action.removeprefix("questions/"), body)
         raise APIError(404, "not_found")
 
     async def shutdown(self):

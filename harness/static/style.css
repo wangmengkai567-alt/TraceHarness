@@ -66,7 +66,7 @@ textarea { min-height: 156px; max-height: 300px; resize: vertical; line-height: 
 .recent-run-text small { display: block; color: #8d9ab0; font-size: 10px; margin-top: 5px; }
 .recent-state { width: 6px; height: 6px; border-radius: 50%; background: #aeb9c7; }
 .recent-state[data-state="unverified"] { background: #009a70; }
-.recent-state[data-state="running"], .recent-state[data-state="awaiting_approval"] { background: #4586f5; }
+.recent-state[data-state="running"], .recent-state[data-state="awaiting_approval"], .recent-state[data-state="awaiting_user"] { background: #4586f5; }
 .recent-state[data-state="failed"], .recent-state[data-state="budget_exceeded"] { background: #df7777; }
 .workspace-column { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
 .result-header { min-height: 80px; display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 18px 22px; }
@@ -125,7 +125,7 @@ textarea { min-height: 156px; max-height: 300px; resize: vertical; line-height: 
 .overview-list dd { margin: 0; text-align: right; color: #586a82; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-badge { font-size: 10px; padding: 3px 9px; border-radius: 20px; color: #6e7e93; background: #f1f4f7; white-space: nowrap; }
 .status-badge[data-status="unverified"] { color: #03815c; background: #e1f6eb; }
-.status-badge[data-status="running"], .status-badge[data-status="awaiting_approval"] { color: #2f74d3; background: #eaf2ff; }
+.status-badge[data-status="running"], .status-badge[data-status="awaiting_approval"], .status-badge[data-status="awaiting_user"] { color: #2f74d3; background: #eaf2ff; }
 .status-badge[data-status="failed"], .status-badge[data-status="budget_exceeded"] { color: #bc6658; background: #fff1ed; }
 .progress-track { display: block; width: 100%; height: 3px; border: none; appearance: none; background: #f0f5f3; border-radius: 3px; margin: 14px 0 3px; overflow: hidden; accent-color: #00a473; }
 .progress-track::-webkit-progress-bar { background: #f0f5f3; }
@@ -180,6 +180,10 @@ pre { background: #f2f6f7; color: #52687c; font: 11px/1.8 Consolas, "Microsoft Y
 .artifact-list small { display: block; color: #8b9e94; font-size: 10px; }
 .approval-card { padding: 17px; border-color: #e5d59f; background: #fffdf6; flex-shrink: 0; }
 .approval-card pre { max-height: 130px; font-size: 10px; }
+.question-card { padding: 20px; border-color: #c4e3d8; flex-shrink: 0; max-height: 50dvh; overflow: auto; }
+.question-card h2 { margin: 0 0 12px; font-size: 16px; }
+.question-card textarea { min-height: 90px; max-height: 200px; }
+.question-card .actions { flex-wrap: wrap; margin-top: 12px; }
 .actions { display: flex; gap: 8px; }
 .muted { color: var(--muted); font-size: 10px; line-height: 1.8; overflow-wrap: anywhere; }
 .empty-note { font-size: 11px; color: #9ca8b8; line-height: 1.8; padding: 12px 0; }

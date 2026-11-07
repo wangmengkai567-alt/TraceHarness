@@ -10,6 +10,8 @@ let displayedLogs = 0, observedTurn = 0, lastAnswerKey = "", lastPlanKey = "", l
 const seen = new Set();
 const statuses = {running: "运行中", verifying: "正在检查", awaiting_approval: "等待审批", cancelling: "正在取消", cancelled: "已取消", completed: "指定检查通过", verification_failed: "检查失败", unverified: "已结束 · 未验证", failed: "执行失败", budget_exceeded: "预算耗尽", interrupted: "运行已中断"};
 const activeStatuses = new Set(["running", "verifying", "awaiting_approval", "cancelling"]);
+statuses.awaiting_user = "等待你的回答";
+activeStatuses.add("awaiting_user");
 const reasons = {configured_checks_failed: "配置检查未全部通过，详见检查证据。", repeated_tool_failure: "连续相同工具失败达到上限，已停止派发。", tool_call_limit: "工具调用总预算已耗尽。", process_termination_unconfirmed: "Docker 客户端或容器清理未确认；已停止后续操作，请核查 sandbox.json 中的资源。", turn_limit: "已达到模型交互轮数上限，未收到有效的最终答复。请查看执行轨迹；需要继续时可调整 max_turns 后发起新任务。", model_call_limit: "已达到模型请求次数上限（包含重试），未收到最终答复。", total_timeout: "已达到本次运行的总时长上限。", input_char_limit: "模型输入超过上下文字符预算。", model_request_timeout: "模型请求超时，有限重试后仍未成功。"};
 Object.assign(reasons, {
   model_completion_token_limit: "模型生成达到单次 token 上限，响应被截断。",
@@ -20,6 +22,10 @@ Object.assign(reasons, {
 const eventNames = {verification_started: "开始检查", verification_finished: "检查结束", check_started: "执行检查项", check_finished: "检查项结果", model_repair_requested: "请求修正模型格式", run_started: "运行开始", rules_loaded: "规范已加载", plan_updated: "计划变更", memory_updated: "记忆更新", model_requested: "请求模型", model_responded: "模型回复", tool_requested: "调用工具", tool_responded: "工具反馈", model_error: "模型错误", model_retry_scheduled: "请求重试", context_history_limited: "历史裁剪", final_response_requested: "请求最终答复", tool_dispatch_blocked: "已阻止工具调用", cancel_requested: "请求取消", approval_requested: "等待审批", approval_decided: "审批决定", approval_cancelled: "审批已取消", approval_expired: "审批已过期", simulated_action_completed: "模拟操作完成", run_finished: "运行结束"};
 Object.assign(eventNames, {network_request: "发送网络请求", network_response: "收到网络响应", network_error: "网络错误",
   network_retry_scheduled: "网络请求重试", network_operation: "联网工具结束", model_concise_answer_requested: "请求精简收尾"});
+Object.assign(eventNames, {user_question_requested: "等待用户回答", user_answer_received: "已接收回答",
+  user_answer_used: "回答已进入模型请求", user_question_expired: "问题已过期", user_question_cancelled: "问题已取消",
+  tool_batch_rejected: "整批工具已拒绝"});
+reasons.user_wait_timeout = "等待用户回答超过时限，任务已结束。";
 function text(id, value) { if ($(id).textContent !== String(value ?? "")) $(id).textContent = value ?? ""; }
 function pretty(value) { return JSON.stringify(value, null, 2); }
 function node(tag, className, content) {
@@ -60,6 +66,9 @@ function controls() {
   const pending = snapshot && snapshot.approval && snapshot.approval.status === "pending" && snapshot.status === "awaiting_approval";
   $("approve").disabled = posting || !pending;
   $("reject").disabled = posting || !pending;
+  const questionPending = snapshot?.status === "awaiting_user" && snapshot?.question?.status === "pending";
+  $("user-answer").disabled = posting || !questionPending;
+  $("submit-answer").disabled = posting || !questionPending || !$("user-answer").value?.trim();
   $("copy-answer").disabled = !snapshot?.result?.answer;
 }
 function setTab(name, focus = false) {
@@ -232,7 +241,7 @@ function render(value) {
   if (answerKey !== lastAnswerKey) {
     lastAnswerKey = answerKey;
     if (answer) renderAnswer(answer);
-    else emptyAnswer(value.status === "awaiting_approval" ? "等待你的决定" : "任务正在执行", "可以在右侧日志窗口查看最新进展，最终回答将在这里呈现。");
+    else emptyAnswer(value.status === "awaiting_user" ? "需要补充信息" : value.status === "awaiting_approval" ? "等待你的决定" : "任务正在执行", "可以查看最新进展，最终回答将在这里呈现。");
   }
   text("answer-label", result ? "本次任务的最终回复" : "等待任务结果");
   text("verification", value.checks.verified ? "仅所配置检查项通过；其他需求仍需核对。" : value.checks.note);
@@ -280,6 +289,18 @@ function render(value) {
   $("approval-section").hidden = !value.approval;
   text("approval", value.approval ? pretty(value.approval) : "");
   text("approve", value.approval?.type === "shell" ? "批准执行此命令" : "批准模拟操作");
+  const question = value.question;
+  $("question-section").hidden = !question;
+  const questionKey = value.run_id + ":" + (question?.question_id || "");
+  if ($("question-section").dataset.questionKey !== questionKey) {
+    $("question-section").dataset.questionKey = questionKey;
+    $("user-answer").value = "";
+  }
+  text("user-question", question?.question || "");
+  $("user-answer").maxLength = question?.max_answer_chars || 4000;
+  text("question-state", question?.status === "answered" ? "回答已接收，正在继续原任务。" :
+    question?.status === "expired" ? "问题已过期。" : question?.status === "cancelled" ? "问题已取消。" :
+    "等待上限 " + duration(question?.wait_timeout_seconds) + "，计入任务总时限。回答仅补充任务信息。");
   if (prefilledRun !== value.run_id && !formDirty) {
     $("workspace").value = metadata.workspace || $("workspace").value;
     $("input-files").value = (metadata.input_files || []).join("\n");
@@ -437,6 +458,7 @@ function select(run) {
   $("artifacts").replaceChildren(node("li", "empty-note", "暂无产物")); text("file-count", "0");
   text("rules-version", "尚未加载"); renderMarkdown($("rules"), "暂无记录", "answer-content context-markdown"); text("rules-raw", "暂无记录"); text("memory", "{}"); text("metadata", "暂无记录"); text("run-limits", "");
   $("approval-section").hidden = true;
+  $("question-section").hidden = true; $("user-answer").value = "";
   $("completion-report").replaceChildren();
   emptyAnswer(run ? "正在读取运行记录" : "让想法成为结果", run ? "正在恢复本次回答与执行轨迹。" : "在左侧描述你的任务，回答、产物与执行过程会在这里呈现。");
   localStorage.setItem("harness.run", run);
@@ -465,6 +487,23 @@ async function action(kind) {
   } catch (e) { error("操作未接受：" + e.message + "。请查看最新状态。"); }
   finally { posting = false; controls(); await poll(); }
 }
+async function answerQuestion() {
+  if (posting || snapshot?.status !== "awaiting_user" || snapshot?.question?.status !== "pending") return;
+  const run = selected, question = snapshot.question.question_id, answer = $("user-answer").value;
+  if (!answer.trim()) return;
+  posting = true; controls(); error();
+  try {
+    await api("/api/runs/" + run + "/questions/" + question, {answer});
+    if (selected === run && snapshot?.question?.question_id === question) {
+      snapshot.question.status = "answered";
+      text("question-state", "回答已接收，正在继续原任务。");
+    }
+    nextHistory = 0;
+  } catch (e) { error("回答未确认接收：" + e.message + "。请核对最新状态后操作。"); }
+  finally { posting = false; controls(); await poll(); }
+}
+$("question-form").addEventListener("submit", (event) => { event.preventDefault(); void answerQuestion(); });
+$("user-answer").addEventListener("input", controls);
 $("task-form").addEventListener("submit", (event) => { event.preventDefault(); void submit("model"); });
 $("demo").addEventListener("click", () => void submit("approval_demo"));
 $("cancel").addEventListener("click", () => void action("cancel"));

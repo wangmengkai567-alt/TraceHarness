@@ -10,6 +10,7 @@
 
 - **任务执行**：接入 OpenAI 兼容的 Chat Completions 接口，支持工具调用、有限重试、超时和取消。
 - **上下文管理**：加载工作目录根部的 `AGENTS.md`，维护可调整计划、带来源的任务记忆和近期交互历史。
+- **任务澄清**：Web 任务缺少必要信息时可提问，用户回答后在同一任务中继续，不重放工具或重置预算。
 - **文件操作**：读写工作目录内的 UTF-8 文本，以文件哈希检测写入冲突，保留已有编码与换行风格。
 - **隔离命令**：Web 中的 Shell 在离线 Docker 容器执行；限定只读命令自动放行，其余允许的命令逐条审批，支持超时、取消及容器清理。
 - **联网读取**：可选 Tavily 搜索与网页正文提取，支持长文分段续读和来源追溯。
@@ -108,6 +109,7 @@ docker build --tag harness-sandbox:1 --file sandbox/Dockerfile sandbox
 | `request_timeout_seconds` | 90 | 单次模型请求时限，单位秒 |
 | `total_timeout_seconds` | 360 | 任务总时限，包含工具、审批及重试等待 |
 | `approval_timeout_seconds` / `shell_timeout_seconds` | 60 / 60 | 审批等待和单条命令执行上限，单位秒 |
+| `user_wait_timeout_seconds` | 120 | 单次用户澄清等待上限，同时受剩余总时限约束 |
 | `recent_history_turns` | 4 | 保留近期完整交互组，规范、计划和任务记忆持续提供 |
 | `max_completion_tokens` / `max_output_chars` | 4096 / 16000 | 单次生成 token 上限与输出字符上限，分别约束 |
 | `checks` | `[]` | 默认不配置结果检查 |
@@ -138,6 +140,14 @@ docker build --tag harness-sandbox:1 --file sandbox/Dockerfile sandbox
 支持 `file_contains` 和 `shell` 两类检查。模型提出最终答复后，执行器运行配置检查；失败证据反馈模型，在剩余预算内修正。Shell 检查与普通命令共用策略；只有完整识别的只读命令自动放行，其他允许的命令每次独立审批。
 
 无检查时，正常结束为 `unverified`；全部配置检查通过为 `completed`；修正机会耗尽仍未通过为 `verification_failed`。其他终态包括执行失败、取消、预算耗尽和中断。检查通过仅表示配置项通过。
+
+### 运行中回答问题
+
+Web 模型任务提供 `ask_user`：缺少必要信息时，页面显示“需要补充信息”和回答框；提交文本后沿用原 Run、计划、记忆和工具结果继续执行。信息充分时无需提问。每次只有一个文本问题和一个回答，问题最多 2000 字符，回答最多 4000 字符；序列化后的回答还须符合工具输出上限，超过时明确拒绝，不静默截断。
+
+单次等待默认最多 120 秒，计入任务总时限。等待期间不请求模型，刷新恢复同一个问题；重复回答、问题标识不符、过期、取消或终态后提交均拒绝。等待超时以 `budget_exceeded` 结束，原因是 `user_wait_timeout` 或 `total_timeout`。回答不批准 Shell、不改变配置检查，也不重新开始预算。CLI 不声明此工具。
+
+提问必须是该轮唯一工具，混合批次在执行前整批拒绝。问题及回答写入 `question.json` 和事件日志，`user_answer_received` 记录接收，`user_answer_used` 关联回答首次进入的后续模型请求。服务重启后未完成 Run 显示中断，不恢复等待或旧操作。验收与复现见 [阶段 2 交付记录](docs/STAGE_TWO_CLARIFICATION_ACCEPTANCE.md)。
 
 ## 运行记录
 

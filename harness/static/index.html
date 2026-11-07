@@ -31,6 +31,15 @@
     <div class="workspace-column">
       <div id="error" class="error-banner" role="alert" hidden></div>
       <section class="card result-header"><div class="card-heading"><span class="icon-box" aria-hidden="true">▤</span><div><h2>任务结果</h2><p id="result-subtitle">从一个目标开始，让每次执行都有迹可循</p></div></div><div class="result-header-actions"><div class="run-indicator"><span id="status-symbol" class="status-symbol">○</span><div><p id="status" role="status" aria-live="polite">准备就绪</p><p id="result-duration" class="muted">等待开始新的任务</p></div></div><button id="cancel" class="danger" disabled>取消运行</button></div></section>
+      <section id="question-section" class="card question-card" aria-labelledby="question-title" hidden>
+        <h2 id="question-title">需要补充信息</h2>
+        <p id="user-question" class="plain-line"></p>
+        <form id="question-form">
+          <label for="user-answer">你的回答</label>
+          <textarea id="user-answer" rows="3" maxlength="4000" required disabled></textarea>
+          <div class="actions"><button id="submit-answer" class="primary" type="submit" disabled>提交回答并继续</button><p id="question-state" class="muted" role="status" aria-live="polite"></p></div>
+        </form>
+      </section>
       <div class="workspace-body">
         <section class="card result-card">
           <div class="tabs" role="tablist" aria-label="任务结果视图">

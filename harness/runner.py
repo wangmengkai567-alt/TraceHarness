@@ -28,6 +28,7 @@ from .verification import verify
 from .search import NetworkTools, check_public_dns
 from .workspace import Workspace
 from .sandbox import Sandbox, recover
+from .clarification import ClarificationTools
 
 T = TypeVar("T")
 
@@ -48,14 +49,15 @@ class Halt(Exception):
 class Runner:
     # 一个实例接收模型和能力依赖；每次 run 的计数、上下文及恢复状态在函数内创建。
     def __init__(self, config: Config, model: Model, *, tools: Tools | None = None,
-                 secrets: tuple[str, ...] = (), approve=None, phase=None,
+                 secrets: tuple[str, ...] = (), approve=None, ask=None, phase=None,
                  network_transport=None, network_dns_check=check_public_dns):
-        # approve 由 Web 注入；未提供时不开放 Shell。phase 用来通知 Web 当前是否在验收。
+        # Web 注入 approve/ask；未提供时不声明对应交互能力。phase 通知当前阶段。
         config.validate()
         self.config, self.model = config, model
         self.tools = tools if tools is not None else ArithmeticTools()
         self.secrets = secrets
         self.approve = approve
+        self.ask = ask
         self.phase = phase if phase is not None else lambda value: None
         self.termination_unconfirmed = False
         self.network_transport, self.network_dns_check = network_transport, network_dns_check
@@ -98,6 +100,7 @@ class Runner:
         verification_attempts = 0
         model_repairs = 0
         concise_recovery = False
+        answers: dict[str, str] = {}
         checks = copy.deepcopy(config.checks)
         # 固定本次验收配置，避免外部修改列表影响正在运行的任务。
         store.write_json("metadata.json", {
@@ -189,11 +192,13 @@ class Runner:
             if result is None:
                 try:
                     # Shell 外层时限要容纳审批等待与命令执行；各阶段仍受总时限约束。
-                    timeout = (config.approval_timeout_seconds + config.shell_timeout_seconds + 1
+                    timeout = (config.user_wait_timeout_seconds if call.name == "ask_user" and self.ask else
+                               config.approval_timeout_seconds + config.shell_timeout_seconds + 1
                                if call.name == "run_command" and self.approve else
                                config.search_timeout_seconds if call.name == "web_search" else
                                config.extract_timeout_seconds if call.name == "read_webpage" else config.tool_timeout_seconds)
                     result = await controlled(run_tools.execute(call), timeout,
+                                              "user_wait_timeout" if call.name == "ask_user" and self.ask else
                                               "network_timeout" if call.name in {"web_search", "read_webpage"} else "tool_timeout")
                 except TerminationUnconfirmed:
                     self.termination_unconfirmed = True
@@ -201,6 +206,8 @@ class Runner:
                 except Halt:
                     raise
                 except ModelError as error:
+                    if error.code == "user_wait_timeout":
+                        raise Halt(Status.BUDGET_EXCEEDED, error.code) from None
                     result = ToolResult(False, error=error.code)
                 except Exception:
                     result = ToolResult(False, error="tool_execution_error")
@@ -211,6 +218,8 @@ class Runner:
                 record["evidence"] = {key: value for key, value in result.data.items()
                                       if key in {"path", "sha256", "bytes", "exit_code", "timed_out"}}
             result = bound_result(result, config.max_output_chars)
+            if call.name == "ask_user" and result.ok:
+                answers[call.id] = result.data["question_id"]
             store.emit("tool_responded", call_id=call.id, name=call.name, result=result.wire(), purpose=purpose)
             check()
             if recovery.repeats >= config.max_consecutive_failures:
@@ -242,8 +251,13 @@ class Runner:
             core = (ShellTools(workspace, config, self.approve, store.emit, cancel, network, sandbox=sandbox)
                     if self.approve else network)
             run_tools = RunTools(core, files, context)
+            if self.ask:
+                async def ask(call_id, question):
+                    return await self.ask(call_id, question, min(
+                        config.user_wait_timeout_seconds, max(0, deadline - time.monotonic())))
+                run_tools = ClarificationTools(run_tools, ask)
             recovery = Recovery(files)
-            # 工具组合顺序：RunTools → 状态/文件，或 ShellTools → NetworkTools → 基础工具。
+            # Web 的 ClarificationTools 位于外层；其他调用仍由原工具链处理。
             for turn in range(1, config.max_turns + 1):
                 # 第二阶段：组装当前上下文；历史可裁剪，任务、规范、计划和记忆始终保留。
                 check()
@@ -299,6 +313,11 @@ class Runner:
                     store.emit("model_requested", turn=turn, attempt=attempt + 1,
                                model_call=model_calls, messages=messages,
                                final_response_only=final_response_only)
+                    for entry in messages:
+                        call_id = entry.get("tool_call_id")
+                        if entry["role"] == "tool" and call_id in answers:
+                            store.emit("user_answer_used", question_id=answers.pop(call_id),
+                                       tool_call_id=call_id, model_call=model_calls, turn=turn)
                     try:
                         reply = await controlled(self.model.complete(messages, schemas),
                                                  config.request_timeout_seconds, "model_request_timeout")
@@ -364,6 +383,17 @@ class Runner:
                     raise Halt(Status.BUDGET_EXCEEDED, "turn_limit")
                 group = [message]
                 history.append(group)
+                if len(reply.tool_calls) > 1 and any(call.name == "ask_user" for call in reply.tool_calls):
+                    # Validate the whole batch before dispatching even its first operation.
+                    if tool_calls + len(reply.tool_calls) > config.max_tool_calls:
+                        raise Halt(Status.BUDGET_EXCEEDED, "tool_call_limit")
+                    tool_calls += len(reply.tool_calls)
+                    store.emit("tool_batch_rejected", reason="ask_user_must_be_only_tool",
+                               call_ids=ids)
+                    for call in reply.tool_calls:
+                        group.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(
+                            ToolResult(False, error="ask_user_must_be_only_tool").wire())})
+                    continue
                 if not reply.tool_calls:
                     # 第三阶段：无工具调用代表模型提交最终回答；是否验证成功由检查决定。
                     if not reply.content or not reply.content.strip():

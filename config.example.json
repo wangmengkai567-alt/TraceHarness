@@ -9,6 +9,7 @@
   "request_timeout_seconds": 90,
   "tool_timeout_seconds": 5,
   "approval_timeout_seconds": 60,
+  "user_wait_timeout_seconds": 120,
   "shell_timeout_seconds": 60,
   "max_retries": 2,
   "retry_base_seconds": 0.5,
