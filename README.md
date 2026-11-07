@@ -19,16 +19,15 @@
 
 ## 快速开始
 
-以下命令在仓库根目录、已初始化 conda 的 PowerShell 中执行。
+以下命令在仓库根目录的 PowerShell 中执行。先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，确保 `uv --version` 可用；无需激活环境。
 
 ### 1. 安装环境
 
 ```powershell
-conda env create -f environment.yml
-conda activate harness
+uv sync --locked
 ```
 
-已有 `harness` 环境时，激活后运行 `python -m pip install -r requirements.txt` 更新依赖即可。
+首次执行会创建 `.venv` 并安装 `uv.lock` 锁定的依赖，Python 限定为 3.12，`.python-version` 固定使用 3.12.13；项目直接从源码运行，不打包安装。后续同步仍用 `uv sync --locked`。修改依赖使用 `uv add` / `uv remove`，同时提交 `pyproject.toml` 与 `uv.lock`。不要使用 `--active` 指向其他环境。
 
 ### 2. 配置模型
 
@@ -52,7 +51,7 @@ HARNESS_API_KEY=你的 API 密钥
 ### 3. 启动 Web 工作台
 
 ```powershell
-python -m harness serve --env-file .env --config config.example.json
+uv run --locked python -m harness serve --env-file .env --config config.example.json
 ```
 
 打开终端给出的地址，默认是 `http://127.0.0.1:8765`。填写已有工作目录和任务后即可运行，页面提供回答、产物、计划、工具轨迹和命令审批。可用 `--port 8766` 更换端口，请使用输出的精确地址，`localhost` 别名会被 Host 校验拒绝。
@@ -64,7 +63,7 @@ python -m harness serve --env-file .env --config config.example.json
 运行任务：
 
 ```powershell
-python -m harness run --env-file .env --config config.example.json --task "先用工具计算47+58，再将返回值乘以3，报告结果。"
+uv run --locked python -m harness run --env-file .env --config config.example.json --task "先用工具计算47+58，再将返回值乘以3，报告结果。"
 ```
 
 文件任务添加 `--workspace "你的工作目录"`。命令行支持文件和可选联网工具，Shell 命令及 Shell 检查通过 Web 审批执行。
@@ -72,12 +71,24 @@ python -m harness run --env-file .env --config config.example.json --task "先�
 验证真实模型的工具调用闭环：
 
 ```powershell
-python -m harness live-check --env-file .env --config config.example.json
+uv run --locked python -m harness live-check --env-file .env --config config.example.json
 ```
 
 成功时输出 `live_check_passed: true`。此命令调用真实模型，会产生 API 用量；配置缺失时明确报错。
 
 固定诊断场景与事件证据检查位于 [`diagnostics.py`](harness/diagnostics.py)，CLI 负责调用和展示，普通任务不会自动运行诊断。计算工具实现位于 [`arithmetic.py`](harness/arithmetic.py)，通用工具反馈长度限制位于 [`tool_results.py`](harness/tool_results.py)。
+
+## Docker CLI 位置
+
+后端仍运行在 Windows 宿主。当前机器的固定 Docker CLI 是 `C:\Program Files\Docker\Docker\resources\bin\docker.exe`；在启动项目的同一 PowerShell 中设置：
+
+```powershell
+$env:Path = "$env:USERPROFILE\.local\bin;C:\Program Files\Docker\Docker\resources\bin;$env:Path"
+uv --version
+uv run --locked docker --version
+```
+
+本机 uv 位于 `C:\Users\Dell\.local\bin\uv.exe`。PATH 设置仅作用于当前终端及其子进程；程序不自动搜索其他安装路径。阶段 0 只确认 CLI 可调用，尚未接入 Docker 沙箱，也没有验证容器隔离。
 
 ## 配置
 
@@ -102,7 +113,7 @@ python -m harness live-check --env-file .env --config config.example.json
 
 ### 联网搜索与网页读取
 
-在本机 `.env` 中填写 `TAVILY_API_KEY`，将启动 JSON 的 `network_enabled` 改为 `true` 后重启。启用后，模型可在预算内调用 `web_search` 和 `read_webpage`；搜索词和待读网址会发送给 Tavily，并产生相应 API 用量。
+程序默认关闭联网；当前 `config.example.json` 显式设置 `network_enabled=true`。使用该示例即选择启用联网，须在本机 `.env` 中填写 `TAVILY_API_KEY`；不需要联网时将此项设为 `false`。修改后重启。启用后，模型可在预算内调用 `web_search` 和 `read_webpage`；搜索词和待读网址会发送给 Tavily，并产生相应 API 用量。
 
 长正文按文档编号续读，不重复抓取。来源、保存正文和已读区间会落盘；提取成功或读完保存内容不保证原网页完整，引用编号存在也不等于事实已核实。登录、验证码、浏览器交互及 PDF 不在支持保证范围内。
 
@@ -129,7 +140,7 @@ python -m harness live-check --env-file .env --config config.example.json
 可在 Web 查看历史，或将下方示例编号替换为实际任务 ID：
 
 ```powershell
-python -m harness inspect 20261016001 --events
+uv run --locked python -m harness inspect 20261016001 --events
 ```
 
 自定义记录目录时添加 `--runs-dir "记录目录"`。历史记录用于查看；中断任务不自动续跑，也不复用旧审批。
@@ -137,12 +148,12 @@ python -m harness inspect 20261016001 --events
 ## 开发与测试
 
 ```powershell
-python -m unittest discover -s tests -v
+uv run --locked python -m unittest discover -s tests -v
 node tests/test_web_ui.js
-python -m pip check
+uv pip check --python .venv/Scripts/python.exe
 ```
 
-Python 测试使用 `unittest`，页面脚本测试需要 Node.js。这些检查不调用外部模型，部分测试会启动并清理本地服务和子进程。真实模型与完整样例的复现方式见 [交付与复现指南](docs/MVP_DELIVERY.md)。
+Python 测试使用 `unittest`，页面脚本测试需要 Node.js。这些检查不调用外部模型，部分测试会启动并清理本地服务和子进程。依赖检查命令中的解释器路径对应 Windows 项目环境；Node.js 需单独安装。真实模型与完整样例的复现方式见 [交付与复现指南](docs/MVP_DELIVERY.md)。
 
 ## 使用边界
 
