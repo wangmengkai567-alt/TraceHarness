@@ -29,6 +29,7 @@ from .sandbox import recover
 from .processes import TerminationUnconfirmed
 from .contracts import ToolResult
 from .clarification import MAX_ANSWER_CHARS
+from .sessions import Sessions, SessionError
 from urllib.parse import parse_qs, quote
 
 STATIC = Path(__file__).with_name("static")
@@ -60,6 +61,9 @@ class ActiveRun:
     # 回答与命令审批使用独立 Future，不能交叉授权。
     answer: asyncio.Future | None = None
     question_deadline: float = 0
+    session_id: str | None = None
+    request_id: str | None = None
+    request_signature: str | None = None
 
 
 def read_json(path: Path, fallback=None):
@@ -88,6 +92,12 @@ class RunManager:
         self.active: ActiveRun | None = None
         # 终态文件是结果依据；没有终态的旧运行只展示为中断，不从磁盘恢复后台任务。
         self.jobs: set[asyncio.Task] = set()
+        self.sessions = Sessions(config)
+        self.owner = uuid4().hex
+        self.start_lock = asyncio.Lock()
+        password = os.environ.get("HARNESS_REDIS_PASSWORD", "")
+        if password:
+            self.secrets += (password,)
 
     def folder(self, run_id: str) -> Path:
         # 从受校验的运行 ID 定位记录目录，拒绝符号链接及越出记录根目录的路径。
@@ -114,10 +124,15 @@ class RunManager:
         record.job.add_done_callback(self.jobs.discard)
 
     async def start(self, body: dict) -> dict:
+        # Redis awaits must not let two requests bypass the single-active-run check.
+        async with self.start_lock:
+            return await self.start_locked(body)
+
+    async def start_locked(self, body: dict) -> dict:
         # 校验任务、工作目录和单任务限制后，才创建运行记录并异步调度。
         if self.process_control_blocked:
             raise APIError(409, "process_termination_unconfirmed_restart_required")
-        if set(body) - {"task", "workspace", "mode", "input_files"}:
+        if set(body) - {"task", "workspace", "mode", "input_files", "session_id", "request_id"}:
             raise APIError(400, "unknown_fields")
         task, workspace, mode = body.get("task"), body.get("workspace"), body.get("mode", "model")
         if not isinstance(task, str) or not task.strip() or len(task) > self.config.max_input_chars:
@@ -131,27 +146,51 @@ class RunManager:
                 raise ValueError
         except (OSError, ValueError, RuntimeError):
             raise APIError(400, "workspace_must_exist") from None
-        if self.active and self.active.job and not self.active.job.done():
-            raise APIError(409, "another_run_is_active")
         try:
             names = input_names(path, body.get("input_files", []))
         except (FileError, OSError):
             raise APIError(400, "invalid_input_files") from None
+        signature = digest(json.dumps({"task": task, "input_files": names}, ensure_ascii=False,
+                                      sort_keys=True).encode("utf-8"))
+        session_id, request_id = body.get("session_id"), body.get("request_id")
+        if mode == "model":
+            from .sessions import SESSION_ID
+            if not isinstance(request_id, str) or not SESSION_ID.fullmatch(request_id):
+                raise APIError(400, "invalid_request_id")
+            doc, _ = await self.sessions.load(session_id)
+            if doc["project"] != os.path.normcase(str(path)):
+                raise APIError(409, "session_project_mismatch")
+            if (self.active and self.active.job and not self.active.job.done()
+                    and self.active.session_id == session_id and self.active.request_id == request_id):
+                if self.active.request_signature != signature:
+                    raise APIError(409, "request_id_conflict")
+                return {"run_id": self.active.store.run_id, "duplicate": True}
+            if request_id in doc["requests"]:
+                request = doc["requests"][request_id]
+                if request["signature"] != signature:
+                    raise APIError(409, "request_id_conflict")
+                return {"run_id": request["run_id"], "duplicate": True}
+            if len(doc["groups"]) >= self.config.max_session_groups:
+                raise APIError(409, "session_group_limit")
+        elif session_id is not None or request_id is not None:
+            raise APIError(400, "demo_has_no_session")
+        if self.active and self.active.job and not self.active.job.done():
+            raise APIError(409, "another_run_is_active")
         # 先构建真实模型再创建记录；配置缺失直接报错，不静默切换到模拟模型。
         try:
             model = self.model_factory() if mode == "model" else None
         except ValueError:
             raise APIError(503, "model_configuration_unavailable") from None
         store = RunStore(self.root, self.secrets)
-        record = ActiveRun(store)
+        record = ActiveRun(store, session_id=session_id, request_id=request_id, request_signature=signature)
         self.active = record
         if mode == "model":
-            self.track(record, self.run_model(record, task, path, model, names))
+            self.track(record, self.run_model(record, task, path, model, names, session_id, request_id))
         else:
             self.track(record, self.run_demo(record, task, path))
         return {"run_id": store.run_id}
 
-    async def run_model(self, record: ActiveRun, task: str, workspace: Path, model, names):
+    async def run_model(self, record: ActiveRun, task: str, workspace: Path, model, names, session_id, request_id):
         # 把 Web 的审批等待函数、阶段状态回调和取消事件注入 Runner。
         try:
             runner = Runner(self.config, model, secrets=self.secrets,
@@ -159,7 +198,9 @@ class RunManager:
                             ask=lambda call_id, question, duration: self.request_question(record, call_id, question, duration),
                             phase=lambda value: setattr(record, "status", value))
             result = await runner.run(
-                task, workspace, record.cancel, store=record.store, input_files=names)
+                task, workspace, record.cancel, store=record.store, input_files=names,
+                sessions=self.sessions, session_id=session_id, session_owner=self.owner, request_id=request_id,
+                request_signature=record.request_signature)
             self.process_control_blocked = runner.termination_unconfirmed
             record.status = result["status"]
         except asyncio.CancelledError:
@@ -379,6 +420,22 @@ class RunManager:
 
     async def dispatch(self, method: str, path: str, body=None):
         # 业务路由：运行列表/详情、启动、事件增量、取消、审批；不负责 HTTP 安全校验。
+        if method == "POST" and path == "/api/sessions":
+            if set(body) != {"workspace"} or not isinstance(body["workspace"], str) or not body["workspace"].strip():
+                raise APIError(400, "invalid_session_project")
+            try:
+                project = Path(body["workspace"]).resolve(strict=True)
+                if not project.is_dir():
+                    raise ValueError
+            except (ValueError, OSError, RuntimeError):
+                raise APIError(400, "workspace_must_exist") from None
+            return self.sessions.public(await self.sessions.create(os.path.normcase(str(project))))
+        session_match = re.fullmatch(r"/api/sessions/([0-9a-f]{32})", path)
+        if method == "GET" and session_match:
+            doc, _ = await self.sessions.load(session_match[1])
+            if doc["last_run"] and doc["last_run"]["status"] == "running" and doc["last_run"]["owner"] != self.owner:
+                doc["last_run"]["status"] = "interrupted"
+            return self.sessions.public(doc)
         if method == "GET" and path == "/api/runs":
             runs = []
             for folder in sorted(self.root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -443,6 +500,7 @@ class RunManager:
             self.active.cancel.set()
         if self.jobs:
             await asyncio.gather(*list(self.jobs), return_exceptions=True)
+        await self.sessions.close()
 
 
 # 页面仅允许同源脚本、样式和连接，并禁止缓存、内容类型猜测及被外站嵌入。
@@ -546,6 +604,12 @@ def create_app(manager: RunManager, port: int = 8765) -> FastAPI:
     async def api_error(request, error):
         # 将业务层抛出的安全错误转换为一致的 HTTP JSON 响应。
         return JSONResponse({"error": error.code}, status_code=error.status)
+
+    @app.exception_handler(SessionError)
+    async def session_error(request, error):
+        status = (503 if error.code.startswith("redis_") else 410 if error.code == "session_missing_or_expired"
+                  else 400 if error.code == "invalid_session_id" else 409)
+        return JSONResponse({"error": error.code}, status_code=status)
 
     return app
 

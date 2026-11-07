@@ -32,6 +32,10 @@ class Config:
     tool_timeout_seconds: float = 5  # 普通工具的执行时限，Shell/联网另有专用值。
     approval_timeout_seconds: float = 60  # 一次 Shell 审批最多等待多久。
     user_wait_timeout_seconds: float = 120  # 单次用户澄清等待，计入任务总时限。
+    redis_port: int = 16379  # Redis 固定连接本机回环地址，密码单独从环境读取。
+    session_ttl_seconds: float = 604800  # 成功更新后 7 天过期；读取不续期。
+    max_session_groups: int = 100  # 会话完整交互组上限，达到时明确停止。
+    max_session_bytes: int = 1048576  # Redis 会话序列化 UTF-8 字节上限。
     shell_timeout_seconds: float = 60  # 单条 Shell 命令允许申请的最大执行时限。
     # 暂时性请求错误按指数退避重试，等待时间为 retry_base_seconds * 2**attempt。
     max_retries: int = 2  # 首次请求失败后最多再尝试几次。
@@ -81,6 +85,7 @@ class Config:
             raise ValueError("runs_dir must not be empty")
         integers = (
             "max_turns", "max_model_calls", "max_tool_calls_per_turn",
+            "redis_port", "max_session_groups", "max_session_bytes",
             "max_input_chars", "max_output_chars", "max_response_bytes",
             "max_completion_tokens",
             "max_file_bytes", "max_rules_bytes", "max_directory_entries",
@@ -108,10 +113,12 @@ class Config:
         for name in ("total_timeout_seconds", "request_timeout_seconds",
                      "tool_timeout_seconds", "retry_base_seconds",
                      "approval_timeout_seconds", "user_wait_timeout_seconds", "shell_timeout_seconds", "search_timeout_seconds",
-                     "extract_timeout_seconds"):
+                     "extract_timeout_seconds", "session_ttl_seconds"):
             value = getattr(self, name)
             if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be positive and finite")
+        if self.redis_port > 65535 or self.session_ttl_seconds < .001:
+            raise ValueError("invalid Redis port or session lifetime")
         from .verification import validate_checks
         validate_checks(self.checks, self.shell_timeout_seconds)
         # 远程地址要求 HTTPS；仅回环地址允许 HTTP，便于本地模型服务和测试。

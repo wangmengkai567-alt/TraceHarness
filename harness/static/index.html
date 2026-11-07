@@ -18,6 +18,7 @@
         <div class="card-heading"><span class="icon-box" aria-hidden="true">↗</span><div><h1>任务配置</h1><p>定义目标，开始一次智能体运行</p></div></div>
         <form id="task-form">
           <label for="workspace">原始材料目录（不会自动修改）</label><input id="workspace" required placeholder="已有目录的绝对路径" autocomplete="off">
+          <div class="session-controls"><p id="session-state" class="muted">先新建会话，或选择历史任务后在该会话继续。</p><div class="actions"><button id="new-session" class="outline" type="button">新建会话</button><button id="continue-session" class="outline" type="button" disabled>在此会话继续</button></div></div>
           <label for="input-files">交给 Agent 的文件（每行一个相对路径）</label><textarea id="input-files" rows="3" placeholder="input.txt&#10;verify.py"></textarea><p class="muted">仅复制列出的文件；根 AGENTS.md 存在时自动纳入。任务在独立副本中操作，完成后取回产物。</p>
           <label for="task">任务要求 <span class="required">*</span></label><textarea id="task" rows="7" required placeholder="希望 Agent 帮你完成什么？&#10;&#10;描述目标、相关材料和期望的结果…"></textarea><div id="task-count" class="field-counter">0 字</div>
           <div class="config-label">运行方式</div><div class="config-value"><span aria-hidden="true">◇</span> 本地单体 · 单任务运行</div>

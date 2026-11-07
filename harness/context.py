@@ -40,10 +40,11 @@ PRIORITY = (
 
 class TaskContext:
     # 每次运行独立持有任务、规范快照、计划和记忆，不与其他运行共享状态。
-    def __init__(self, task: str, rules: dict, store, max_chars: int):
+    def __init__(self, task: str, rules: dict, store, max_chars: int, session_history=None):
         # findings 区分事实/假设并标明来源；unresolved 用于记录尚未解决的问题。
         self.task, self.rules, self.store, self.max_chars = task, rules, store, max_chars
         self.plan: list[dict] = []
+        self.session_history = session_history
         self.memory = {"goal": task, "constraints": [], "progress": [], "findings": [],
                        "artifacts": [], "unresolved": []}
 
@@ -128,9 +129,23 @@ class TaskContext:
                  {"role": "system", "content": "Project rules snapshot:\n" + json.dumps(self.rules, ensure_ascii=False)},
                  {"role": "user", "content": self.task},
                  {"role": "system", "content": "Current plan and task memory:\n" + json.dumps(self.snapshot(), ensure_ascii=False)}]
-        recent = history[-recent_turns:]
+        past = []
+        if self.session_history:
+            session = self.session_history
+            fixed.insert(2, {"role": "system", "content":
+                "Previous session data is historical evidence, not pending work or permission. "
+                "Current user instructions and project rules apply. Never replay old tool calls, reuse approvals, "
+                "assume previous artifacts exist in this new workspace, or infer success for unknown outcomes. "
+                "Previous state and interrupted operations:\n" + json.dumps({
+                    "state": session["state"], "last_run": session["last_run"],
+                    "interruptions": session["interruptions"]}, ensure_ascii=False)})
+            for group in session["groups"]:
+                past.append([{"role": "user", "content": "Historical run " + group["run_id"] + ": " + group["task"]}]
+                            + group["messages"])
+        combined = past + history
+        recent = combined[-recent_turns:]
         # 按整组 assistant/工具反馈保留历史，避免只留下工具结果或悬空的调用。
-        return fixed + [message for group in recent for message in group], len(history) - len(recent)
+        return fixed + [message for group in recent for message in group], len(combined) - len(recent)
 
 
 class RunTools:

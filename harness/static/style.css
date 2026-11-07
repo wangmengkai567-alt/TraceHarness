@@ -202,3 +202,8 @@ pre { background: #f2f6f7; color: #52687c; font: 11px/1.8 Consolas, "Microsoft Y
 .recent-state[data-state="verification_failed"] { background: #df7777; }
 .status-symbol[data-state="verification_failed"] { background: #fff0ee; color: #d87767; }
 .status-badge[data-status="verification_failed"] { color: #bc6658; background: #fff1ed; }
+
+.session-controls { margin: -8px 0 20px; }
+.session-controls .actions { flex-wrap: wrap; gap: 7px; }
+.session-controls button { font-size: 11px; padding: 7px; }
+.session-controls p { overflow-wrap: anywhere; }

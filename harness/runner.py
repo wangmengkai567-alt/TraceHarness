@@ -29,6 +29,7 @@ from .search import NetworkTools, check_public_dns
 from .workspace import Workspace
 from .sandbox import Sandbox, recover
 from .clarification import ClarificationTools
+from .sessions import SessionError
 
 T = TypeVar("T")
 
@@ -64,7 +65,8 @@ class Runner:
 
     async def run(self, task: str, workspace: Path,
                   cancel: asyncio.Event | None = None, *, store: RunStore | None = None,
-                  input_files: list[str] | None = None) -> dict:
+                  input_files: list[str] | None = None, sessions=None, session_id=None,
+                  session_owner=None, request_id=None, request_signature=None) -> dict:
         # 先检查任务与目录，随后建立记录、能力包装和本次运行独立的预算/状态。
         if not isinstance(task, str) or not task.strip():
             raise ValueError("task must not be empty")
@@ -101,6 +103,10 @@ class Runner:
         model_repairs = 0
         concise_recovery = False
         answers: dict[str, str] = {}
+        session_history = None
+        session_started = False
+        session_failed = False
+        group_seq = 0
         checks = copy.deepcopy(config.checks)
         # 固定本次验收配置，避免外部修改列表影响正在运行的任务。
         store.write_json("metadata.json", {
@@ -110,6 +116,7 @@ class Runner:
             "config": config.snapshot(), "mode": config.provider,
             "final_response_policy": "reserve_last_turn",
             "owner_pid": os.getpid(),
+            "session_id": session_id,
         })
         store.emit("run_started", provider=config.provider)
 
@@ -145,8 +152,16 @@ class Runner:
                     self.termination_unconfirmed = True
                     raise Halt(Status.FAILED, "process_termination_unconfirmed")
 
-        def finish(status: Status, reason: str, answer: str | None = None) -> dict:
+        async def finish(status: Status, reason: str, answer: str | None = None) -> dict:
             # 所有终止路径共用：汇总回答、预算、证据、未决副作用和未完成计划并落盘。
+            if session_started and not session_failed:
+                try:
+                    await sessions.update(session_id, store.run_id, status=status.value,
+                                          state=store.redact(context.snapshot()) if context else None)
+                    store.emit("session_run_finished", session_id=session_id, status=status.value)
+                except SessionError as error:
+                    status, reason = Status.FAILED, error.code
+                    store.emit("session_error", session_id=session_id, code=error.code)
             for item in check_evidence:
                 if item.get("status") == "running":
                     item.update(status="interrupted", passed=False, error="check_interrupted")
@@ -154,6 +169,7 @@ class Runner:
                         if copy_workspace else {"changes": [], "complete": False, "errors": ["workspace_not_prepared"]})
             result = store.redact({
                 "schema_version": 1, "run_id": store.run_id, "status": status.value,
+                "session_id": session_id,
                 "reason": reason, "answer": answer, "verified": status == Status.COMPLETED,
                 "turns": turns, "model_calls": model_calls, "tool_calls": tool_calls,
                 "usage": usage, "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -173,6 +189,16 @@ class Runner:
             store.write_json("result.json", result)
             return result
 
+        async def save_group(group):
+            nonlocal group_seq
+            if sessions:
+                _, duplicate = await controlled(sessions.update(session_id, store.run_id,
+                    messages=store.redact(group), group_seq=group_seq + 1,
+                    state=store.redact(context.snapshot())), 3, "session_timeout")
+                group_seq += 1
+                store.emit("session_group_saved", session_id=session_id, group_seq=group_seq,
+                           call_ids=[message["tool_call_id"] for message in group[1:]], duplicate=duplicate)
+
         async def dispatch(call: ToolCall, purpose="task") -> ToolResult:
             # 工具和验收共用的执行入口：计数 → 记录 → 恢复检查 → 执行 → 保存反馈。
             nonlocal tool_calls
@@ -180,6 +206,9 @@ class Runner:
             if tool_calls >= config.max_tool_calls:
                 raise Halt(Status.BUDGET_EXCEEDED, "tool_call_limit")
             tool_calls += 1
+            if sessions and purpose == "verification":
+                await controlled(sessions.update(session_id, store.run_id,
+                    pending=[{"call_id": call.id, "name": call.name, "outcome": "unknown"}]), 3, "session_timeout")
             store.emit("tool_requested", call_id=call.id, name=call.name, arguments=call.arguments, purpose=purpose)
             record = {"call_id": call.id, "name": call.name, "purpose": purpose,
                       "ok": None, "error": "operation_interrupted_or_outcome_unknown"}
@@ -221,6 +250,8 @@ class Runner:
             if call.name == "ask_user" and result.ok:
                 answers[call.id] = result.data["question_id"]
             store.emit("tool_responded", call_id=call.id, name=call.name, result=result.wire(), purpose=purpose)
+            if sessions and purpose == "verification":
+                await controlled(sessions.update(session_id, store.run_id, pending=[]), 3, "session_timeout")
             check()
             if recovery.repeats >= config.max_consecutive_failures:
                 raise Halt(Status.FAILED, "repeated_tool_failure")
@@ -229,6 +260,16 @@ class Runner:
         try:
             # 第一阶段：加载规范快照、初始化计划记忆，并组合本次可用的工具。
             check()
+            if sessions:
+                doc, session_history = await controlled(sessions.begin(session_id, os.path.normcase(str(workspace)),
+                    store.run_id, store.redact(task), session_owner, request_id,
+                    previous_run_finished=True, request_signature=request_signature), 3, "session_timeout")
+                group_seq = len(doc["groups"])
+                session_started = True
+                store.emit("session_loaded", session_id=session_id, group_count=group_seq,
+                           recent_groups=config.recent_history_turns)
+                # This is an evidence snapshot only; subsequent loads always use Redis.
+                store.write_json("session.json", sessions.public(doc))
             await controlled(recover(Path(config.runs_dir).resolve()), 60, "sandbox_recovery_timeout")
             copy_workspace = Workspace(workspace, [] if input_files is None else input_files, store)
             workspace = copy_workspace.root
@@ -246,7 +287,7 @@ class Runner:
                 raise Halt(Status.FAILED, "rules_access_error") from None
             store.write_json("rules.json", rules)
             store.emit("rules_loaded", **rules)
-            context = TaskContext(task, rules, store, config.max_state_chars)
+            context = TaskContext(task, rules, store, config.max_state_chars, session_history)
             store.write_json("state.json", context.snapshot())
             core = (ShellTools(workspace, config, self.approve, store.emit, cancel, network, sandbox=sandbox)
                     if self.approve else network)
@@ -393,14 +434,16 @@ class Runner:
                     for call in reply.tool_calls:
                         group.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(
                             ToolResult(False, error="ask_user_must_be_only_tool").wire())})
+                    await save_group(group)
                     continue
                 if not reply.tool_calls:
                     # 第三阶段：无工具调用代表模型提交最终回答；是否验证成功由检查决定。
                     if not reply.content or not reply.content.strip():
                         raise ModelError("model_empty_response")
+                    await save_group(group)
                     if not checks:
                         # 没有配置检查时只能标记为未验证，不能凭模型回答标记 completed。
-                        return finish(Status.UNVERIFIED, "model_finished_without_verifier", reply.content)
+                        return await finish(Status.UNVERIFIED, "model_finished_without_verifier", reply.content)
                     verification_attempts += 1
                     self.phase("verifying")
                     store.emit("verification_started", attempt=verification_attempts)
@@ -410,29 +453,40 @@ class Runner:
                     store.emit("verification_finished", attempt=verification_attempts, passed=passed, checks=check_evidence)
                     self.phase("running")
                     if passed:
-                        return finish(Status.COMPLETED, "configured_checks_passed", reply.content)
+                        return await finish(Status.COMPLETED, "configured_checks_passed", reply.content)
                     if final_response_only or verification_attempts >= config.max_verification_attempts:
-                        return finish(Status.VERIFICATION_FAILED, "configured_checks_failed", reply.content)
+                        return await finish(Status.VERIFICATION_FAILED, "configured_checks_failed", reply.content)
                     history.append([{"role": "user", "content": "Executor verification failed. Correct the work and plan if possible, "
                                     "then give a new final answer; shell checks use the same Docker policy and one-use approval. Evidence: "
                                     + json.dumps(check_evidence, ensure_ascii=False)}])
                     continue
+                if sessions:
+                    if group_seq >= config.max_session_groups:
+                        raise SessionError("session_group_limit")
+                    await controlled(sessions.update(session_id, store.run_id,
+                        pending=[{"call_id": call.id, "name": call.name, "outcome": "unknown"} for call in reply.tool_calls]),
+                        3, "session_timeout")
                 for call in reply.tool_calls:
                     # 顺序执行本轮工具，再将对应 tool_call_id 的反馈作为同组历史交回模型。
                     result = await dispatch(call)
                     group.append({"role": "tool", "tool_call_id": call.id,
                                      "content": json.dumps(result.wire(), ensure_ascii=False)})
+                await save_group(group)
             raise Halt(Status.BUDGET_EXCEEDED, "turn_limit")
         except Halt as halt:
-            return finish(halt.status, halt.reason)
+            return await finish(halt.status, halt.reason)
+        except SessionError as error:
+            session_failed = True
+            store.emit("session_error", session_id=session_id, code=error.code)
+            return await finish(Status.FAILED, error.code)
         except ModelError as error:
-            return finish(Status.FAILED, error.code)
+            return await finish(Status.FAILED, error.code)
         except FileError as error:
-            return finish(Status.FAILED, "workspace_" + str(error))
+            return await finish(Status.FAILED, "workspace_" + str(error))
         except asyncio.CancelledError:
             # 宿主直接取消协程时也保存终态，然后继续向上传播取消信号。
-            finish(Status.CANCELLED, "task_cancelled")
+            await finish(Status.CANCELLED, "task_cancelled")
             raise
         except Exception:
             # 未知异常只记录固定错误码，避免原始异常中的传输凭据进入运行记录。
-            return finish(Status.FAILED, "internal_error")
+            return await finish(Status.FAILED, "internal_error")

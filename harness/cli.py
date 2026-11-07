@@ -29,7 +29,7 @@ def print_json(value) -> None:
 
 async def execute(args, config, *, live: bool = False) -> dict:
     # 收集密钥供日志脱敏；Ctrl+C 转成取消事件，让 Runner 有机会收尾并保存结果。
-    secrets = tuple(os.environ.get(name, "") for name in ("HARNESS_API_KEY", "TAVILY_API_KEY"))
+    secrets = tuple(os.environ.get(name, "") for name in ("HARNESS_API_KEY", "TAVILY_API_KEY", "HARNESS_REDIS_PASSWORD"))
     model = OpenAICompatibleModel(config, os.environ.get("HARNESS_API_KEY", ""))
     cancel = asyncio.Event()
     loop = asyncio.get_running_loop()

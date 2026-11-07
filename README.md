@@ -10,6 +10,7 @@
 
 - **任务执行**：接入 OpenAI 兼容的 Chat Completions 接口，支持工具调用、有限重试、超时和取消。
 - **上下文管理**：加载工作目录根部的 `AGENTS.md`，维护可调整计划、带来源的任务记忆和近期交互历史。
+- **会话记忆**：Web 使用 Redis 保存完整交互和状态，同会话的新任务可使用近期历史；过期、容量和存储故障明确反馈。
 - **任务澄清**：Web 任务缺少必要信息时可提问，用户回答后在同一任务中继续，不重放工具或重置预算。
 - **文件操作**：读写工作目录内的 UTF-8 文本，以文件哈希检测写入冲突，保留已有编码与换行风格。
 - **隔离命令**：Web 中的 Shell 在离线 Docker 容器执行；限定只读命令自动放行，其余允许的命令逐条审批，支持超时、取消及容器清理。
@@ -49,13 +50,32 @@ HARNESS_MODEL=服务实际支持的模型标识
 HARNESS_API_KEY=你的 API 密钥
 ```
 
-### 3. 启动 Web 工作台
+### 3. 准备本地 Redis
+
+先启动 Docker Desktop 的 Linux 引擎，再执行：
+
+```powershell
+uv run --locked python redis/setup.py
+docker compose -f redis/compose.yaml up -d
+```
+
+首次准备会为本项目生成独立凭据：应用密码追加到本机 `.env`，Redis ACL 和管理凭据保存在被忽略的 `.redis/`；已有模型配置保留，凭据不打印。再次执行保留现有凭据；不匹配时明确报错，需手动核对。Redis 使用固定镜像摘要，绑定 `127.0.0.1:16379`，与其他项目实例分开，数据保存在 Docker 命名卷 `harness-sessions_data`。
+
+Redis 启用 AOF 每秒同步、256 MiB 数据内存上限和 `noeviction`；异常掉电可能丢失约一秒数据。容器内存上限 512 MiB，留出运行开销。停止时保留数据：
+
+```powershell
+docker compose -f redis/compose.yaml stop
+```
+
+不要使用删除数据卷的命令清理日常服务。应用不会自动启动 Redis，Redis 故障也不会转用 JSON 或内存保存会话。
+
+### 4. 启动 Web 工作台
 
 ```powershell
 uv run --locked python -m harness serve --env-file .env --config config.example.json
 ```
 
-打开终端给出的地址，默认是 `http://127.0.0.1:8765`。填写已有工作目录和任务后即可运行，页面提供回答、产物、计划、工具轨迹和命令审批。可用 `--port 8766` 更换端口，请使用输出的精确地址，`localhost` 别名会被 Host 校验拒绝。
+打开终端给出的地址，默认是 `http://127.0.0.1:8765`。填写已有工作目录，点击“新建会话”，再填写任务并开始运行，页面提供回答、产物、计划、工具轨迹和命令审批。可用 `--port 8766` 更换端口，请使用输出的精确地址，`localhost` 别名会被 Host 校验拒绝。
 
 刷新页面可恢复运行记录；关闭页面不会取消任务，请使用“取消运行”。停止服务使用 Ctrl+C，并等待活动任务及命令进程清理结束。
 
@@ -109,6 +129,9 @@ docker build --tag harness-sandbox:1 --file sandbox/Dockerfile sandbox
 | `request_timeout_seconds` | 90 | 单次模型请求时限，单位秒 |
 | `total_timeout_seconds` | 360 | 任务总时限，包含工具、审批及重试等待 |
 | `approval_timeout_seconds` / `shell_timeout_seconds` | 60 / 60 | 审批等待和单条命令执行上限，单位秒 |
+| `redis_port` | 16379 | Redis 固定连接本机 127.0.0.1，应用账号 harness |
+| `session_ttl_seconds` | 604800 | 最后一次成功更新后 7 天过期，读取不续期 |
+| `max_session_groups` / `max_session_bytes` | 100 / 1048576 | 完整交互组数和序列化 UTF-8 字节上限 |
 | `user_wait_timeout_seconds` | 120 | 单次用户澄清等待上限，同时受剩余总时限约束 |
 | `recent_history_turns` | 4 | 保留近期完整交互组，规范、计划和任务记忆持续提供 |
 | `max_completion_tokens` / `max_output_chars` | 4096 / 16000 | 单次生成 token 上限与输出字符上限，分别约束 |
@@ -149,6 +172,20 @@ Web 模型任务提供 `ask_user`：缺少必要信息时，页面显示“需�
 
 提问必须是该轮唯一工具，混合批次在执行前整批拒绝。问题及回答写入 `question.json` 和事件日志，`user_answer_received` 记录接收，`user_answer_used` 关联回答首次进入的后续模型请求。服务重启后未完成 Run 显示中断，不恢复等待或旧操作。验收与复现见 [阶段 2 交付记录](docs/STAGE_TWO_CLARIFICATION_ACCEPTANCE.md)。
 
+## Redis 会话与继续执行
+
+选择历史任务，点击“在此会话继续”，填写新的目标后启动新的 Run。新 Run 重新加载当前项目根规范、重新建立计划和预算，在新工作副本操作；旧计划及任务记忆仅作为历史资料。历史产物不会自动复制到新工作副本，如需使用，先明确取回并列入新任务材料。
+
+一个会话最多保存 100 个完整交互组，序列化总量最多 1 MiB，包含状态和运行关联。一个组由模型回复及其全部工具反馈组成，不等于一次 Run。超过限额明确停止追加，不偷偷删除早期内容；7 天没有成功更新的会话仍会自然过期。Redis 总容量不足时拒绝新增写入，不提前淘汰尚未过期的会话。
+
+阶段 3 只将近期 `recent_history_turns` 个完整组和必要状态交给模型，Redis 保存的全部历史不会全部注入，也尚无累计摘要。输入超过现有上下文预算时明确停止，不扩大原任务预算。
+
+会话不会恢复旧命令、审批或待回答问题。被取消或中断的半组不进入模型协议历史；可能已经发生的操作以只读的“结果未知”说明保留。重启应用后可以读取仍存在的 Redis 会话并明确发起新 Run，旧 Run 仍为中断。Redis 不可达、鉴权失败、数据损坏、会话不存在或过期分别反馈，不静默创建替代会话。
+
+Web API：`POST /api/sessions` 接收 `{"workspace":"项目目录"}`，`GET /api/sessions/{session_id}` 读取会话信息。模型任务 `POST /api/runs` 必须带 `session_id` 和新生成的 32 位十六进制 `request_id`；重复提交相同请求返回原 Run，复用同一 ID 修改目标或材料会被拒绝。页面会保留结果未确认时的请求 ID。原 `/api/session` 仍只负责同源访问令牌。
+
+CLI `run` 保持独立单次任务，不读写 Redis 会话。命令容器不接收 Redis 凭据。JSON/JSONL 和 `session.json` 是只读执行证据，不是备用会话数据库。设计及验收见 [阶段 3 记录](docs/STAGE_THREE_SESSIONS_ACCEPTANCE.md)。
+
 ## 运行记录
 
 每次任务保存在 `runs/<run-id>/`，包含配置和规范快照、最新计划与记忆、完整事件 `events.jsonl` 及最终报告 `result.json`，以及 `workspace/` 工作副本、`sandbox.json` 容器归属/清理记录和 `workspace_manifest.json` 文件差异。产物页标明新增、修改、删除及采集完整性，允许取回校验通过且未变化的普通文件。联网启用时还保存来源索引和提取正文。
@@ -169,14 +206,14 @@ node tests/test_web_ui.js
 uv pip check --python .venv/Scripts/python.exe
 ```
 
-Python 测试使用 `unittest`，页面脚本测试需要 Node.js。这些检查不调用外部模型；Shell/HTTP 集成检查需要上述 Docker 镜像和运行中的 Linux 引擎，测试会清理其创建的服务及容器。依赖检查命令中的解释器路径对应 Windows 项目环境；Node.js 需单独安装。真实模型与完整样例的复现方式见 [交付与复现指南](docs/MVP_DELIVERY.md)。
+Python 测试使用 `unittest`，页面脚本测试需要 Node.js。Web/会话检查需要先按上文启动本项目 Redis 并生成凭据；它们使用真实 Redis。测试管理凭据仅用于本机故障与容量检查，应用账号仍受 ACL 限制。这些检查不调用外部模型；Shell/HTTP 集成检查需要上述 Docker 镜像和运行中的 Linux 引擎，测试会清理其创建的服务及容器。依赖检查命令中的解释器路径对应 Windows 项目环境；Node.js 需单独安装。真实模型与完整样例的复现方式见 [交付与复现指南](docs/MVP_DELIVERY.md)。
 
 ## 使用边界
 
 - 面向可信本地项目，单用户、单活动任务；服务仅监听 `127.0.0.1`，不支持远程公开部署或多 worker。
 - Shell 使用固定 Docker 权限，审批不能开放宿主资源、网络或特权模式；容器不构成对任意恶意代码的绝对隔离。每条命令结束即清理容器，不支持常驻服务。
 - 文件工具默认处理不超过 64 KiB 的 UTF-8 文本；哈希和文件锁不能提供恶意外部修改下的完整事务保证。
-- 任务记忆限于本次运行；当前不支持跨任务长期记忆、断点续跑、嵌套规范或多 Agent。
+- Web Redis 会话支持多次 Run 的近期上下文；SQLite 长期记忆、自动摘要、断点续跑、嵌套规范和多 Agent 尚未实现。
 - 当前模型响应为非流式；轮数、时限及输入输出预算可能使任务提前结束。
 
 输入最多 1000 个文件、合计 64 MiB；禁止链接及默认排除的凭据/环境目录。结束扫描最多 10000 项、深度 32、256 MiB、10 秒；不完整时不推断未确认的删除。中断任务不重放命令，服务启动时只清理归属记录与完整标签匹配的遗留容器，清理未确认时阻止新任务。

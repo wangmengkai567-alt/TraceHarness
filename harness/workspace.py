@@ -15,7 +15,7 @@ SCAN_FILES = 10000
 SCAN_BYTES = 256 * 1024 * 1024
 SCAN_DEPTH = 32
 SCAN_SECONDS = 10
-EXCLUDED = {".git", ".venv", "runs", "__pycache__"}
+EXCLUDED = {".git", ".venv", ".redis", "runs", "__pycache__"}
 
 
 def relative_name(value):
@@ -51,6 +51,8 @@ def ordinary(root, name):
 
 
 def input_names(source, names):
+    if any(part.casefold() == ".redis" for part in source.resolve().parts):
+        raise FileError("input_file_excluded")
     if not isinstance(names, list) or len(names) > INPUT_FILES:
         raise FileError("input_files_must_be_explicit_list")
     result = []

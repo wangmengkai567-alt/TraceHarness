@@ -1,0 +1,15 @@
+name: harness-sessions
+services:
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ../.redis/users.acl:/run/redis/users.acl:ro
+      - data:/data
+    mem_limit: 512m
+    restart: "no"
+volumes:
+  data:

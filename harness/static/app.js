@@ -5,6 +5,7 @@ let token = "", selected = "", cursor = 0, epoch = 0, loading = false, posting =
 let snapshot = null, runs = [], nextHistory = 0, activeTab = "answer";
 let lastNetworkKey = "";
 let lastRulesContent = null;
+let currentSession = null, pendingRunRequest = null;
 let lastReportKey = "";
 let displayedLogs = 0, observedTurn = 0, lastAnswerKey = "", lastPlanKey = "", lastHistoryKey = "", prefilledRun = "", formDirty = false;
 const seen = new Set();
@@ -26,6 +27,11 @@ Object.assign(eventNames, {user_question_requested: "等待用户回答", user_a
   user_answer_used: "回答已进入模型请求", user_question_expired: "问题已过期", user_question_cancelled: "问题已取消",
   tool_batch_rejected: "整批工具已拒绝"});
 reasons.user_wait_timeout = "等待用户回答超过时限，任务已结束。";
+Object.assign(eventNames, {session_loaded: "会话已加载", session_group_saved: "会话交互已保存",
+  session_run_finished: "会话运行状态已保存", session_error: "会话存储错误"});
+Object.assign(reasons, {redis_unavailable: "Redis 不可达，任务已停止。", session_missing_or_expired: "会话不存在或已过期，请明确新建会话。",
+  session_data_corrupt: "会话数据损坏，已停止，未重建或替换。", session_group_limit: "会话达到交互组上限，请新建会话。",
+  session_byte_limit: "会话达到容量上限，已停止追加。"});
 function text(id, value) { if ($(id).textContent !== String(value ?? "")) $(id).textContent = value ?? ""; }
 function pretty(value) { return JSON.stringify(value, null, 2); }
 function node(tag, className, content) {
@@ -60,7 +66,9 @@ async function api(path, body) {
 }
 function controls() {
   const active = runs.some((run) => activeStatuses.has(run.status)) || (snapshot && activeStatuses.has(snapshot.status));
-  $("start").disabled = posting || active;
+  $("start").disabled = posting || active || !currentSession;
+  $("new-session").disabled = posting || active;
+  $("continue-session").disabled = posting || active || !snapshot?.metadata?.session_id;
   $("demo").disabled = posting || active;
   $("cancel").disabled = posting || !snapshot || !activeStatuses.has(snapshot.status) || snapshot.status === "cancelling";
   const pending = snapshot && snapshot.approval && snapshot.approval.status === "pending" && snapshot.status === "awaiting_approval";
@@ -471,12 +479,40 @@ async function submit(mode) {
   if (posting) return;
   posting = true; controls(); error();
   try {
-    const value = await api("/api/runs", {task: mode === "approval_demo" ? "模拟审批演练" : $("task").value,
-      workspace: $("workspace").value, input_files: $("input-files").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean), mode});
+    const body = {task: mode === "approval_demo" ? "模拟审批演练" : $("task").value,
+      workspace: $("workspace").value, input_files: $("input-files").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean), mode};
+    if (mode === "model") {
+      if (!currentSession) throw new Error("请先新建会话或在历史会话继续");
+      body.session_id = currentSession.session_id;
+      const key = pretty(body);
+      if (pendingRunRequest?.key !== key) pendingRunRequest = {key, id: crypto.randomUUID().replaceAll("-", "")};
+      body.request_id = pendingRunRequest.id;
+    }
+    const value = await api("/api/runs", body);
+    pendingRunRequest = null;
     select(value.run_id); nextHistory = 0;
   } catch (e) { error("提交失败：" + e.message + "。可查看运行记录确认是否已启动。"); }
   finally { posting = false; controls(); }
 }
+async function chooseSession(continuing) {
+  if (posting) return;
+  posting = true; controls(); error();
+  try {
+    const session = continuing ? await api("/api/sessions/" + snapshot.metadata.session_id) :
+      await api("/api/sessions", {workspace: $("workspace").value});
+    currentSession = session;
+    $("workspace").value = session.project;
+    text("session-state", "会话 " + session.session_id + " · 过期时间 " + dateText(session.expires_at));
+    if (continuing) { $("task").value = ""; text("task-count", "0 字"); $("task").focus(); }
+    formDirty = true; pendingRunRequest = null;
+  } catch (e) {
+    currentSession = null;
+    text("session-state", "会话不可用：" + e.message + "。请核对服务或明确新建会话。");
+    error("会话操作失败：" + e.message);
+  } finally { posting = false; controls(); }
+}
+$("new-session").addEventListener("click", () => void chooseSession(false));
+$("continue-session").addEventListener("click", () => void chooseSession(true));
 async function action(kind) {
   if (!selected || posting) return;
   posting = true; controls(); error();
@@ -511,7 +547,8 @@ $("approve").addEventListener("click", () => void action("approve"));
 $("reject").addEventListener("click", () => void action("reject"));
 $("history").addEventListener("change", () => select($("history").value));
 $("task").addEventListener("input", () => { formDirty = true; text("task-count", $("task").value.length + " 字"); });
-$("workspace").addEventListener("input", () => { formDirty = true; });
+$("workspace").addEventListener("input", () => { formDirty = true; currentSession = null;
+  text("session-state", "项目目录已改变，请新建会话。"); controls(); });
 $("clear-logs").addEventListener("click", clearLogs);
 $("open-trace").addEventListener("click", () => setTab("trace", true));
 $("logs").addEventListener("keydown", (event) => {
