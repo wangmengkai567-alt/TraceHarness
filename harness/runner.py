@@ -26,6 +26,8 @@ from .shell import ShellTools
 from .recovery import Recovery, REPAIRABLE_MODEL_ERRORS
 from .verification import verify
 from .search import NetworkTools, check_public_dns
+from .workspace import Workspace
+from .sandbox import Sandbox, recover
 
 T = TypeVar("T")
 
@@ -59,7 +61,8 @@ class Runner:
         self.network_transport, self.network_dns_check = network_transport, network_dns_check
 
     async def run(self, task: str, workspace: Path,
-                  cancel: asyncio.Event | None = None, *, store: RunStore | None = None) -> dict:
+                  cancel: asyncio.Event | None = None, *, store: RunStore | None = None,
+                  input_files: list[str] | None = None) -> dict:
         # 先检查任务与目录，随后建立记录、能力包装和本次运行独立的预算/状态。
         if not isinstance(task, str) or not task.strip():
             raise ValueError("task must not be empty")
@@ -89,7 +92,8 @@ class Runner:
         run_tools = self.tools
         recovery = None
         operations = []
-        artifacts = {}
+        copy_workspace = None
+        source_workspace = workspace
         check_evidence = []
         verification_attempts = 0
         model_repairs = 0
@@ -143,6 +147,8 @@ class Runner:
             for item in check_evidence:
                 if item.get("status") == "running":
                     item.update(status="interrupted", passed=False, error="check_interrupted")
+            manifest = (copy_workspace.collect(not self.termination_unconfirmed)
+                        if copy_workspace else {"changes": [], "complete": False, "errors": ["workspace_not_prepared"]})
             result = store.redact({
                 "schema_version": 1, "run_id": store.run_id, "status": status.value,
                 "reason": reason, "answer": answer, "verified": status == Status.COMPLETED,
@@ -150,7 +156,8 @@ class Runner:
                 "usage": usage, "elapsed_seconds": round(time.monotonic() - started, 3),
                 "finished_at": utc_now(), "run_directory": str(store.directory),
                 "state": context.snapshot() if context else None,
-                "operations": operations, "artifacts": list(artifacts.values()),
+                "operations": operations, "artifacts": manifest["changes"], "workspace_manifest": manifest,
+                "workspace": str(store.directory / "workspace"), "source_workspace": str(source_workspace),
                 "checks": check_evidence, "verification_attempts": verification_attempts,
                 "unresolved": ((context.memory["unresolved"] if context else [])
                                + list(recovery.unresolved.values()) if recovery else []),
@@ -203,8 +210,6 @@ class Runner:
             if isinstance(result.data, dict):
                 record["evidence"] = {key: value for key, value in result.data.items()
                                       if key in {"path", "sha256", "bytes", "exit_code", "timed_out"}}
-                if result.ok and call.name == "write_file" and "path" in result.data:
-                    artifacts[result.data["path"]] = result.data
             result = bound_result(result, config.max_output_chars)
             store.emit("tool_responded", call_id=call.id, name=call.name, result=result.wire(), purpose=purpose)
             check()
@@ -215,6 +220,14 @@ class Runner:
         try:
             # 第一阶段：加载规范快照、初始化计划记忆，并组合本次可用的工具。
             check()
+            await controlled(recover(Path(config.runs_dir).resolve()), 60, "sandbox_recovery_timeout")
+            copy_workspace = Workspace(workspace, [] if input_files is None else input_files, store)
+            workspace = copy_workspace.root
+            metadata = json.loads((store.directory / "metadata.json").read_text(encoding="utf-8"))
+            metadata.update(input_files=list(copy_workspace.baseline), execution_workspace=str(workspace))
+            store.write_json("metadata.json", metadata)
+            sandbox = Sandbox(store, workspace, copy_workspace.rules)
+            store.emit("workspace_selected", source_workspace=str(source_workspace), workspace=str(workspace))
             files = FileTools(workspace, config.max_file_bytes, config.max_directory_entries)
             try:
                 rules = files.rules(config.max_rules_bytes)
@@ -226,7 +239,7 @@ class Runner:
             store.emit("rules_loaded", **rules)
             context = TaskContext(task, rules, store, config.max_state_chars)
             store.write_json("state.json", context.snapshot())
-            core = (ShellTools(workspace, config, self.approve, store.emit, cancel, network)
+            core = (ShellTools(workspace, config, self.approve, store.emit, cancel, network, sandbox=sandbox)
                     if self.approve else network)
             run_tools = RunTools(core, files, context)
             recovery = Recovery(files)
@@ -237,10 +250,15 @@ class Runner:
                 turns = turn
                 messages, dropped = context.assemble(history, config.recent_history_turns)
                 messages.insert(1, {"role": "system", "content": network.prompt()})
+                messages.insert(1, {"role": "system", "content": "All files and checks use an independent workspace copy. "
+                    "The original directory is never modified. Inputs: " + json.dumps(list(copy_workspace.baseline))
+                    + ". Shell uses Linux syntax in a fixed offline Docker container. Static read-only calls can be "
+                    "automatically allowed; other allowed commands require approval. Outputs are in " + str(workspace)})
                 if checks:
                     messages.insert(1, {"role": "system", "content": "Operator-configured verification checks: "
                         + json.dumps(checks, ensure_ascii=False) + ". On your final answer the executor runs these checks. "
-                        "If they fail, repair within remaining budgets and answer again. Each shell check needs approval. "
+                        "If they fail, repair within remaining budgets and answer again. Shell checks use the same "
+                        "Docker command policy: only verified static read-only calls can run without approval. "
                         "Previous check evidence: " + json.dumps(check_evidence, ensure_ascii=False)})
                 final_response_only = turn == config.max_turns or concise_recovery
                 # 预留最后一轮用于最终回答；生成截断后的恢复轮也禁止继续请求工具。
@@ -366,7 +384,7 @@ class Runner:
                     if final_response_only or verification_attempts >= config.max_verification_attempts:
                         return finish(Status.VERIFICATION_FAILED, "configured_checks_failed", reply.content)
                     history.append([{"role": "user", "content": "Executor verification failed. Correct the work and plan if possible, "
-                                    "then give a new final answer; each shell check needs new approval. Evidence: "
+                                    "then give a new final answer; shell checks use the same Docker policy and one-use approval. Evidence: "
                                     + json.dumps(check_evidence, ensure_ascii=False)}])
                     continue
                 for call in reply.tool_calls:
@@ -379,6 +397,8 @@ class Runner:
             return finish(halt.status, halt.reason)
         except ModelError as error:
             return finish(Status.FAILED, error.code)
+        except FileError as error:
+            return finish(Status.FAILED, "workspace_" + str(error))
         except asyncio.CancelledError:
             # 宿主直接取消协程时也保存终态，然后继续向上传播取消信号。
             finish(Status.CANCELLED, "task_cancelled")

@@ -43,6 +43,17 @@ class FileTools:
                for part in relative.parts if part != "."):
             raise FileError("invalid_path")
         candidate = self.root / relative
+        for part in (candidate, *candidate.parents):
+            if part == self.root:
+                break
+            try:
+                info = part.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or (os.name == "nt" and info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                raise FileError("workspace_link_rejected")
+            if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+                raise FileError("workspace_hardlink_rejected")
         resolved = candidate.resolve()
         if not resolved.is_relative_to(self.root):
             raise FileError("path_outside_workspace")

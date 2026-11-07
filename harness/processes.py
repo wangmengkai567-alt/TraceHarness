@@ -1,7 +1,8 @@
-"""管理本次命令所属的进程树，确保完成、超时或取消后都执行清理。
+"""管理宿主 Docker CLI 子进程树，确保完成、超时或取消后回收客户端。
 
 Windows 先挂起创建进程，加入 Job Object 后再恢复；其他平台创建独立进程组。
-清理仅针对本模块创建的进程树；无法确认清理成功时抛出 TerminationUnconfirmed。
+本模块不执行模型 Shell，也不提供命令沙箱；容器生命周期由 sandbox.py 管理。
+清理仅针对本模块创建的客户端进程树；无法确认退出时抛出 TerminationUnconfirmed。
 """
 from __future__ import annotations
 

@@ -23,6 +23,11 @@ from .config import Config
 from .models import OpenAICompatibleModel
 from .runner import Runner
 from .store import RUN_ID, RUN_ID_PATTERN, RunStore, utc_now
+from .workspace import input_names, ordinary
+from .files import FileError, digest
+from .sandbox import recover
+from .processes import TerminationUnconfirmed
+from urllib.parse import parse_qs, quote
 
 STATIC = Path(__file__).with_name("static")
 # 请求体限制按字节计算；事件分页和详情预览限制用于避免一次返回过多内容。
@@ -106,7 +111,7 @@ class RunManager:
         # 校验任务、工作目录和单任务限制后，才创建运行记录并异步调度。
         if self.process_control_blocked:
             raise APIError(409, "process_termination_unconfirmed_restart_required")
-        if set(body) - {"task", "workspace", "mode"}:
+        if set(body) - {"task", "workspace", "mode", "input_files"}:
             raise APIError(400, "unknown_fields")
         task, workspace, mode = body.get("task"), body.get("workspace"), body.get("mode", "model")
         if not isinstance(task, str) or not task.strip() or len(task) > self.config.max_input_chars:
@@ -122,6 +127,10 @@ class RunManager:
             raise APIError(400, "workspace_must_exist") from None
         if self.active and self.active.job and not self.active.job.done():
             raise APIError(409, "another_run_is_active")
+        try:
+            names = input_names(path, body.get("input_files", []))
+        except (FileError, OSError):
+            raise APIError(400, "invalid_input_files") from None
         # 先构建真实模型再创建记录；配置缺失直接报错，不静默切换到模拟模型。
         try:
             model = self.model_factory() if mode == "model" else None
@@ -131,19 +140,19 @@ class RunManager:
         record = ActiveRun(store)
         self.active = record
         if mode == "model":
-            self.track(record, self.run_model(record, task, path, model))
+            self.track(record, self.run_model(record, task, path, model, names))
         else:
             self.track(record, self.run_demo(record, task, path))
         return {"run_id": store.run_id}
 
-    async def run_model(self, record: ActiveRun, task: str, workspace: Path, model):
+    async def run_model(self, record: ActiveRun, task: str, workspace: Path, model, names):
         # 把 Web 的审批等待函数、阶段状态回调和取消事件注入 Runner。
         try:
             runner = Runner(self.config, model, secrets=self.secrets,
                             approve=lambda spec: self.request_approval(record, spec),
                             phase=lambda value: setattr(record, "status", value))
             result = await runner.run(
-                task, workspace, record.cancel, store=record.store)
+                task, workspace, record.cancel, store=record.store, input_files=names)
             self.process_control_blocked = runner.termination_unconfirmed
             record.status = result["status"]
         except asyncio.CancelledError:
@@ -297,24 +306,13 @@ class RunManager:
         live = bool(active and active.job and not active.job.done())
         metadata = read_json(folder / "metadata.json", {})
         state = read_json(folder / "state.json", {}) or {}
-        # 产物从成功写入事件提取，独立于模型在回答或记忆中的声明。
-        artifacts = {}
-        lines = (folder / "events.jsonl").read_text(encoding="utf-8").splitlines() if (folder / "events.jsonl").exists() else []
-        for line in lines:
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            data = event.get("data", {})
-            if event["type"] == "tool_responded" and data.get("name") == "write_file":
-                wire = data.get("result", {})
-                evidence = wire.get("data")
-                if wire.get("ok") and isinstance(evidence, dict) and "path" in evidence:
-                    artifacts[evidence["path"]] = evidence
+        manifest = read_json(folder / "workspace_manifest.json", {"changes": [], "complete": False,
+                            "errors": ["manifest_unavailable"]})
         return {"run_id": run_id, "status": result["status"] if result else (
                     "cancelling" if live and active.cancel.is_set() else active.status if live else "interrupted"),
                 "metadata": metadata, "state": state, "rules": read_json(folder / "rules.json"),
-                "result": result, "artifacts": list(artifacts.values()),
+                "result": result, "artifacts": manifest["changes"], "workspace_manifest": manifest,
+                "sandbox": read_json(folder / "sandbox.json", {"containers": []}),
                 "network": read_json(folder / "sources.json", {}),
                 "checks": {"verified": bool(result and result.get("verified")),
                            "evidence": result.get("checks", []) if result else [],
@@ -344,6 +342,28 @@ class RunManager:
         if not match:
             raise APIError(404, "not_found")
         run_id, action = match.groups()
+        if method == "GET" and action and action.startswith("artifact?"):
+            folder = self.folder(run_id)
+            if not (folder / "result.json").is_file():
+                raise APIError(409, "run_not_finished")
+            query = parse_qs(action.partition("?")[2], strict_parsing=True)
+            if set(query) != {"path"} or len(query["path"]) != 1:
+                raise APIError(400, "invalid_artifact_path")
+            name = query["path"][0]
+            manifest = read_json(folder / "workspace_manifest.json", {})
+            entry = next((e for e in manifest.get("changes", []) if e["path"] == name and e["change"] != "deleted"), None)
+            if not entry or entry["bytes"] > 64 * 1024 * 1024:
+                raise APIError(404, "artifact_unavailable")
+            try:
+                path = ordinary(folder / "workspace", name)
+                with path.open("rb") as stream:
+                    raw = stream.read(64 * 1024 * 1024 + 1)
+                if len(raw) != entry["bytes"] or digest(raw) != entry["sha256"]:
+                    raise APIError(409, "artifact_changed")
+            except (FileError, OSError):
+                raise APIError(404, "artifact_unavailable") from None
+            return Response(raw, media_type="application/octet-stream", headers={
+                "Content-Disposition": "attachment; filename*=UTF-8''" + quote(Path(name).name)})
         if method == "GET" and action is None:
             return self.snapshot(run_id)
         if method == "GET" and action and action.startswith("events?after="):
@@ -385,6 +405,10 @@ def create_app(manager: RunManager, port: int = 8765) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app):
         # FastAPI 关闭阶段等待管理器完成任务清理。
+        try:
+            await recover(manager.root)
+        except (TerminationUnconfirmed, OSError, ValueError, KeyError):
+            manager.process_control_blocked = True
         yield
         await manager.shutdown()
 
@@ -425,6 +449,7 @@ def create_app(manager: RunManager, port: int = 8765) -> FastAPI:
     async def session():
         # 同源页面先获取令牌和默认工作目录，后续 API 调用通过请求头携带令牌。
         return {"token": token, "default_workspace": str(Path.cwd()),
+                "process_control_blocked": manager.process_control_blocked,
                 "network_enabled": manager.config.network_enabled,
                 "network_available": manager.config.network_enabled and bool(os.environ.get("TAVILY_API_KEY"))}
 

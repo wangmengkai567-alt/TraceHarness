@@ -55,7 +55,7 @@ async def verify(checks, files, dispatch, check_budget, store, evidence):
         evidence.append(item)
         store.emit("check_started", check=spec)
         if spec["type"] == "shell":
-            # 固定的验收命令也走常规工具分发、预算和用户审批，每次生成新调用 ID。
+            # 验收命令也走常规工具分发、预算及命令策略，每次生成新调用 ID。
             call = ToolCall("check-" + uuid4().hex, "run_command", json.dumps({
                 "command": spec["command"], "timeout_seconds": spec["timeout_seconds"]}))
             result = await dispatch(call, purpose="verification")

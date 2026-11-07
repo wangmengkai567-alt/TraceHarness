@@ -40,7 +40,8 @@ async def execute(args, config, *, live: bool = False) -> dict:
             result = await diagnostics.run_live_check(config, model, Path(args.workspace), cancel,
                                                       secrets=secrets)
         else:
-            result = await Runner(config, model, secrets=secrets).run(args.task, Path(args.workspace), cancel)
+            result = await Runner(config, model, secrets=secrets).run(
+                args.task, Path(args.workspace), cancel, input_files=args.input_file)
     finally:
         # 还原信号处理函数，避免影响嵌入调用或后续命令。
         signal.signal(signal.SIGINT, previous)
@@ -57,6 +58,8 @@ def parser() -> argparse.ArgumentParser:
         command.add_argument("--env-file", type=Path, help="Explicit .env path; existing environment wins")
         command.add_argument("--workspace", default=".")
         if name == "run":
+            command.add_argument("--input-file", action="append", default=[],
+                                 help="Relative file to copy into this run; repeat for multiple files. Original files stay unchanged.")
             command.add_argument("--task", required=True)
     inspect = commands.add_parser("inspect")
     inspect.add_argument("run_id")

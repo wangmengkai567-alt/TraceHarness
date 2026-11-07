@@ -14,7 +14,8 @@ from .contracts import ToolResult
 REPAIRABLE_MODEL_ERRORS = {"model_invalid_json", "model_invalid_response", "model_empty_response",
                            "model_incomplete_response", "model_tool_call_limit", "duplicate_tool_call_id"}
 UNCERTAIN_ERRORS = {"file_access_error", "tool_timeout", "tool_execution_error",
-                    "shell_start_or_control_error", "shell_timeout", "shell_command_failed"}
+                    "docker_start_or_control_error", "docker_cli_timeout_or_output_limit", "docker_execution_uncertain",
+                    "shell_timeout", "shell_command_failed", "container_create_failed"}
 
 
 class Recovery:

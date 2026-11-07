@@ -10,7 +10,7 @@ let displayedLogs = 0, observedTurn = 0, lastAnswerKey = "", lastPlanKey = "", l
 const seen = new Set();
 const statuses = {running: "运行中", verifying: "正在检查", awaiting_approval: "等待审批", cancelling: "正在取消", cancelled: "已取消", completed: "指定检查通过", verification_failed: "检查失败", unverified: "已结束 · 未验证", failed: "执行失败", budget_exceeded: "预算耗尽", interrupted: "运行已中断"};
 const activeStatuses = new Set(["running", "verifying", "awaiting_approval", "cancelling"]);
-const reasons = {configured_checks_failed: "配置检查未全部通过，详见检查证据。", repeated_tool_failure: "连续相同工具失败达到上限，已停止派发。", tool_call_limit: "工具调用总预算已耗尽。", process_termination_unconfirmed: "无法确认进程树已结束；已停止后续操作，请检查残留进程。", turn_limit: "已达到模型交互轮数上限，未收到有效的最终答复。请查看执行轨迹；需要继续时可调整 max_turns 后发起新任务。", model_call_limit: "已达到模型请求次数上限（包含重试），未收到最终答复。", total_timeout: "已达到本次运行的总时长上限。", input_char_limit: "模型输入超过上下文字符预算。", model_request_timeout: "模型请求超时，有限重试后仍未成功。"};
+const reasons = {configured_checks_failed: "配置检查未全部通过，详见检查证据。", repeated_tool_failure: "连续相同工具失败达到上限，已停止派发。", tool_call_limit: "工具调用总预算已耗尽。", process_termination_unconfirmed: "Docker 客户端或容器清理未确认；已停止后续操作，请核查 sandbox.json 中的资源。", turn_limit: "已达到模型交互轮数上限，未收到有效的最终答复。请查看执行轨迹；需要继续时可调整 max_turns 后发起新任务。", model_call_limit: "已达到模型请求次数上限（包含重试），未收到最终答复。", total_timeout: "已达到本次运行的总时长上限。", input_char_limit: "模型输入超过上下文字符预算。", model_request_timeout: "模型请求超时，有限重试后仍未成功。"};
 Object.assign(reasons, {
   model_completion_token_limit: "模型生成达到单次 token 上限，响应被截断。",
   completion_token_limit: "模型生成达到单次 token 上限，未取得完整答复。可调整 max_completion_tokens 后重新运行。",
@@ -191,7 +191,7 @@ function render(value) {
   text("result-subtitle", metadata.task || "从一个目标开始，让每次执行都有迹可循");
   $("result-subtitle").title = metadata.task || "";
   text("run-meta", displayRunId(value.run_id)); $("run-meta").title = value.run_id;
-  text("metadata", pretty(metadata));
+  text("metadata", pretty({metadata, sandbox: value.sandbox}));
   const seconds = result?.elapsed_seconds ?? (metadata.started_at ? (Date.now() - new Date(metadata.started_at).getTime()) / 1000 : undefined);
   const plan = value.state?.plan || [], completed = plan.filter((step) => step.status === "completed").length;
   text("result-duration", "耗时 " + duration(seconds) + (plan.length ? " · " + completed + "/" + plan.length + " 步" : ""));
@@ -240,7 +240,7 @@ function render(value) {
   const reportData = result && (result.checks || result.operations) ? {
       status: statuses[value.status] || value.status, reason: result.reason,
       checks: result.checks || [], operations: result.operations || [], artifacts: result.artifacts || [],
-      unfinished_steps: result.unfinished_steps || [], unresolved: result.unresolved || [], scope: result.completion_scope,
+      unfinished_steps: result.unfinished_steps || [], unresolved: result.unresolved || [], scope: result.completion_scope, sandbox: value.sandbox,
   } : null;
   const reportKey = value.run_id + pretty(reportData);
   if (reportKey !== lastReportKey) {
@@ -258,16 +258,31 @@ function render(value) {
   const artifacts = $("artifacts"); artifacts.replaceChildren();
   for (const artifact of value.artifacts) {
     const li = node("li");
-    li.append(node("strong", "", artifact.path), node("span", "", artifact.bytes + " 字节"), node("small", "", "SHA256 " + artifact.sha256));
+    li.append(node("strong", "", artifact.path), node("span", "", (artifact.change || "") + " · " + (artifact.bytes === null ? "已删除" : artifact.bytes + " 字节")), node("small", "", "SHA256 " + artifact.sha256));
+    if (artifact.change !== "deleted" && value.result) {
+      const button = node("button", "", "取回文件");
+      button.addEventListener("click", async () => {
+        try {
+          const response = await fetch("/api/runs/" + value.run_id + "/artifact?path=" + encodeURIComponent(artifact.path), {headers: {"X-Harness-Token": token}});
+          if (!response.ok) throw new Error("文件已变化、不可读取或超限");
+          const url = URL.createObjectURL(await response.blob());
+          const link = node("a"); link.href = url; link.download = artifact.path.split("/").pop(); link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (e) { error(e.message); }
+      });
+      li.append(button);
+    }
     artifacts.append(li);
   }
   if (!value.artifacts.length) artifacts.append(node("li", "empty-note", "本次运行没有生成文件，问答类任务可直接返回回答。"));
   text("file-count", value.artifacts.length);
+  text("manifest-status", value.workspace_manifest?.complete ? "差异采集完整；工作副本：" + value.workspace_manifest.workspace : "差异尚未采集完整：" + (value.workspace_manifest?.errors || []).join(", "));
   $("approval-section").hidden = !value.approval;
   text("approval", value.approval ? pretty(value.approval) : "");
   text("approve", value.approval?.type === "shell" ? "批准执行此命令" : "批准模拟操作");
   if (prefilledRun !== value.run_id && !formDirty) {
     $("workspace").value = metadata.workspace || $("workspace").value;
+    $("input-files").value = (metadata.input_files || []).join("\n");
     $("task").value = metadata.task || "";
     text("task-count", $("task").value.length + " 字"); prefilledRun = value.run_id;
   }
@@ -435,7 +450,7 @@ async function submit(mode) {
   posting = true; controls(); error();
   try {
     const value = await api("/api/runs", {task: mode === "approval_demo" ? "模拟审批演练" : $("task").value,
-      workspace: $("workspace").value, mode});
+      workspace: $("workspace").value, input_files: $("input-files").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean), mode});
     select(value.run_id); nextHistory = 0;
   } catch (e) { error("提交失败：" + e.message + "。可查看运行记录确认是否已启动。"); }
   finally { posting = false; controls(); }
@@ -497,6 +512,7 @@ async function boot() {
     const run = location.hash.slice(1) || localStorage.getItem("harness.run") || "";
     await loadHistory();
     select(validRunId(run) ? run : (runs.find((r) => activeStatuses.has(r.status))?.run_id || ""));
+    if (session.process_control_blocked) error("遗留容器清理未确认，新任务已阻止；请核查运行记录中的 sandbox.json。");
     setInterval(() => void poll(), 700);
   } catch (e) { error("连接服务失败：" + e.message + "。请确认服务已启动并刷新页面。"); }
 }

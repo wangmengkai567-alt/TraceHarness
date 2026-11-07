@@ -11,7 +11,7 @@
 - **任务执行**：接入 OpenAI 兼容的 Chat Completions 接口，支持工具调用、有限重试、超时和取消。
 - **上下文管理**：加载工作目录根部的 `AGENTS.md`，维护可调整计划、带来源的任务记忆和近期交互历史。
 - **文件操作**：读写工作目录内的 UTF-8 文本，以文件哈希检测写入冲突，保留已有编码与换行风格。
-- **命令审批**：Web 中逐条批准 Shell 命令，支持执行超时、取消与 Windows 进程树清理。
+- **隔离命令**：Web 中的 Shell 在离线 Docker 容器执行；限定只读命令自动放行，其余允许的命令逐条审批，支持超时、取消及容器清理。
 - **联网读取**：可选 Tavily 搜索与网页正文提取，支持长文分段续读和来源追溯。
 - **检查与追踪**：配置结果检查，失败后反馈模型修正；保存完整事件、工具反馈和最终报告。
 
@@ -66,7 +66,7 @@ uv run --locked python -m harness serve --env-file .env --config config.example.
 uv run --locked python -m harness run --env-file .env --config config.example.json --task "先用工具计算47+58，再将返回值乘以3，报告结果。"
 ```
 
-文件任务添加 `--workspace "你的工作目录"`。命令行支持文件和可选联网工具，Shell 命令及 Shell 检查通过 Web 审批执行。
+文件任务添加 `--workspace "原始材料目录" --input-file input.txt`；多个文件重复 `--input-file`。仅复制列出的相对路径，根 `AGENTS.md` 自动纳入。文件工具和检查均操作 `runs/<run-id>/workspace`，不自动修改原目录。Web 中每行填写一个相对文件路径。命令行支持文件和可选联网工具，Shell 命令及 Shell 检查仅在 Web 开放，并应用同一命令策略。
 
 验证真实模型的工具调用闭环：
 
@@ -88,7 +88,13 @@ uv --version
 uv run --locked docker --version
 ```
 
-本机 uv 位于 `C:\Users\Dell\.local\bin\uv.exe`。PATH 设置仅作用于当前终端及其子进程；程序不自动搜索其他安装路径。阶段 0 只确认 CLI 可调用，尚未接入 Docker 沙箱，也没有验证容器隔离。
+本机 uv 位于 `C:\Users\Dell\.local\bin\uv.exe`。PATH 设置仅作用于当前终端及其子进程；程序不自动搜索其他安装路径。首次使用 Shell 前，启动 Docker Desktop 的 Linux 引擎，在仓库根目录执行：
+
+```powershell
+docker build --tag harness-sandbox:1 --file sandbox/Dockerfile sandbox
+```
+
+镜像固定为 Python 3.12.13，仅提供标准库；Dockerfile 固定官方基础镜像摘要。任务中不拉取镜像或安装依赖。缺少镜像、Docker 不可达或限制不匹配时明确失败。每条命令使用独立非 root 容器、无网络、只读根目录、1 CPU、512 MiB 内存、64 个进程和 64 MiB 临时目录。工作副本的容量检查不是磁盘硬配额。
 
 ## 配置
 
@@ -129,13 +135,13 @@ uv run --locked docker --version
 }
 ```
 
-支持 `file_contains` 和 `shell` 两类检查。模型提出最终答复后，执行器运行配置检查；失败证据反馈模型，在剩余预算内修正。每次 Shell 检查均需独立审批。
+支持 `file_contains` 和 `shell` 两类检查。模型提出最终答复后，执行器运行配置检查；失败证据反馈模型，在剩余预算内修正。Shell 检查与普通命令共用策略；只有完整识别的只读命令自动放行，其他允许的命令每次独立审批。
 
 无检查时，正常结束为 `unverified`；全部配置检查通过为 `completed`；修正机会耗尽仍未通过为 `verification_failed`。其他终态包括执行失败、取消、预算耗尽和中断。检查通过仅表示配置项通过。
 
 ## 运行记录
 
-每次任务保存在 `runs/<run-id>/`，包含配置和规范快照、最新计划与记忆、完整事件 `events.jsonl` 及最终报告 `result.json`。联网启用时还保存来源索引和提取正文。
+每次任务保存在 `runs/<run-id>/`，包含配置和规范快照、最新计划与记忆、完整事件 `events.jsonl` 及最终报告 `result.json`，以及 `workspace/` 工作副本、`sandbox.json` 容器归属/清理记录和 `workspace_manifest.json` 文件差异。产物页标明新增、修改、删除及采集完整性，允许取回校验通过且未变化的普通文件。联网启用时还保存来源索引和提取正文。
 
 可在 Web 查看历史，或将下方示例编号替换为实际任务 ID：
 
@@ -153,15 +159,17 @@ node tests/test_web_ui.js
 uv pip check --python .venv/Scripts/python.exe
 ```
 
-Python 测试使用 `unittest`，页面脚本测试需要 Node.js。这些检查不调用外部模型，部分测试会启动并清理本地服务和子进程。依赖检查命令中的解释器路径对应 Windows 项目环境；Node.js 需单独安装。真实模型与完整样例的复现方式见 [交付与复现指南](docs/MVP_DELIVERY.md)。
+Python 测试使用 `unittest`，页面脚本测试需要 Node.js。这些检查不调用外部模型；Shell/HTTP 集成检查需要上述 Docker 镜像和运行中的 Linux 引擎，测试会清理其创建的服务及容器。依赖检查命令中的解释器路径对应 Windows 项目环境；Node.js 需单独安装。真实模型与完整样例的复现方式见 [交付与复现指南](docs/MVP_DELIVERY.md)。
 
 ## 使用边界
 
 - 面向可信本地项目，单用户、单活动任务；服务仅监听 `127.0.0.1`，不支持远程公开部署或多 worker。
-- Shell 审批不提供沙箱隔离，批准的命令可访问工作目录外资源；命令结束会清理残余子进程，不支持启动常驻服务。
+- Shell 使用固定 Docker 权限，审批不能开放宿主资源、网络或特权模式；容器不构成对任意恶意代码的绝对隔离。每条命令结束即清理容器，不支持常驻服务。
 - 文件工具默认处理不超过 64 KiB 的 UTF-8 文本；哈希和文件锁不能提供恶意外部修改下的完整事务保证。
 - 任务记忆限于本次运行；当前不支持跨任务长期记忆、断点续跑、嵌套规范或多 Agent。
 - 当前模型响应为非流式；轮数、时限及输入输出预算可能使任务提前结束。
+
+输入最多 1000 个文件、合计 64 MiB；禁止链接及默认排除的凭据/环境目录。结束扫描最多 10000 项、深度 32、256 MiB、10 秒；不完整时不推断未确认的删除。中断任务不重放命令，服务启动时只清理归属记录与完整标签匹配的遗留容器，清理未确认时阻止新任务。
 
 ## 文档
 
