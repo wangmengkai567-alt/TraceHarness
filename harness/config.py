@@ -46,12 +46,16 @@ class Config:
     max_response_bytes: int = 262144  # 模型 HTTP 响应体的字节上限。
     max_completion_tokens: int = 4096  # 单次请求的模型生成 token 上限。
     completion_token_parameter: str = "max_tokens"  # 服务商接受的生成上限参数名称。
-    # 运行记录和文件访问限制；history 只保留最近若干组完整的对话与工具反馈。
+    # 运行记录和文件访问限制；达到 token 阈值后才压缩较早的完整交互组。
     runs_dir: str = "runs"  # 每次运行的元数据、事件、状态和结果保存位置。
     max_file_bytes: int = 65536  # 文件工具单次读取/写入的文件大小上限。
     max_rules_bytes: int = 16384  # 根目录 AGENTS.md 规范快照的大小上限。
     max_directory_entries: int = 200  # 列目录最多返回的条目数。
-    recent_history_turns: int = 4  # 每轮上下文保留的最近完整对话组数。
+    recent_history_turns: int = 4  # 摘要后保留的最近完整对话组数。
+    max_summary_chars: int = 2000  # 累计摘要 JSON 的字符上限；与 token 用量分别计量。
+    model_context_window: int = 1000000  # 当前 Qwen3.8-Flash 官方窗口；更换模型时显式配置。
+    tokenizer_encoding: str = "o200k_base"  # Qwen 官方建议的请求前估算编码，不等于服务端精确用量。
+    auto_compact_token_limit: int | None = 12000  # 可设更低阈值，实际值不超过模型窗口的 90%。
     max_state_chars: int = 16000  # 单次更新计划/记忆的参数字符串长度上限。
     # 全程工具次数、模型格式修复次数、连续相同失败及独立验收的次数上限。
     max_tool_calls: int = 64  # 包含验收命令在内的工具分发总次数上限。
@@ -78,18 +82,23 @@ class Config:
             raise ValueError("network_enabled must be boolean")
         if self.provider != "openai_compatible":
             raise ValueError("provider must be openai_compatible; simulated providers are not supported")
-        for name in ("model", "base_url", "runs_dir"):
+        for name in ("model", "base_url", "runs_dir", "tokenizer_encoding"):
             if not isinstance(getattr(self, name), str):
                 raise ValueError(f"{name} must be text")
         if not self.runs_dir.strip():
             raise ValueError("runs_dir must not be empty")
+        if not self.tokenizer_encoding.strip():
+            raise ValueError("tokenizer_encoding must not be empty")
+        if self.auto_compact_token_limit is not None and (
+                type(self.auto_compact_token_limit) is not int or self.auto_compact_token_limit < 1):
+            raise ValueError("auto_compact_token_limit must be a positive integer or null")
         integers = (
             "max_turns", "max_model_calls", "max_tool_calls_per_turn",
             "redis_port", "max_session_groups", "max_session_bytes",
             "max_input_chars", "max_output_chars", "max_response_bytes",
             "max_completion_tokens",
             "max_file_bytes", "max_rules_bytes", "max_directory_entries",
-            "recent_history_turns", "max_state_chars",
+            "recent_history_turns", "max_summary_chars", "model_context_window", "max_state_chars",
             "max_tool_calls", "max_consecutive_failures", "max_verification_attempts",
             "max_search_requests", "max_extract_requests", "search_max_results",
             "network_max_response_bytes", "max_web_document_chars", "max_web_storage_chars", "web_chunk_chars",
@@ -100,6 +109,8 @@ class Config:
                 raise ValueError(f"{name} must be a positive integer")
         if self.max_output_chars < 128:
             raise ValueError("max_output_chars must be at least 128")
+        if self.max_completion_tokens >= self.model_context_window * 95 // 100:
+            raise ValueError("max_completion_tokens must fit the model's usable context window")
         if self.network_enabled and self.max_output_chars < 4096:
             raise ValueError("network tools require max_output_chars >= 4096")
         if self.search_max_results > 10:
@@ -135,6 +146,10 @@ class Config:
     def snapshot(self) -> dict:
         # 转成可保存的普通字典，便于复盘某次运行使用的实际配置。
         return asdict(self)
+
+    def compaction_threshold(self) -> int:
+        window_limit = self.model_context_window * 90 // 100
+        return min(window_limit, self.auto_compact_token_limit) if self.auto_compact_token_limit is not None else window_limit
 
 
 def load_config(path: Path | None = None, env_file: Path | None = None,

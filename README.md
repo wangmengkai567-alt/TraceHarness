@@ -133,7 +133,11 @@ docker build --tag harness-sandbox:1 --file sandbox/Dockerfile sandbox
 | `session_ttl_seconds` | 604800 | 最后一次成功更新后 7 天过期，读取不续期 |
 | `max_session_groups` / `max_session_bytes` | 100 / 1048576 | 完整交互组数和序列化 UTF-8 字节上限 |
 | `user_wait_timeout_seconds` | 120 | 单次用户澄清等待上限，同时受剩余总时限约束 |
-| `recent_history_turns` | 4 | 保留近期完整交互组，规范、计划和任务记忆持续提供 |
+| `recent_history_turns` | 4 | 摘要后保留的近期完整交互组数；阈值以下保留全部未摘要组 |
+| `model_context_window` | 1000000 | 当前 Qwen3.8-Flash 的 token 窗口；更换模型须显式核对 |
+| `auto_compact_token_limit` | 12000 | token 触发阈值，实际取配置值与模型窗口 90% 的较小值；null 表示仅用 90% |
+| `tokenizer_encoding` | o200k_base | 请求前对消息及工具声明做 token 估算；供应商实际 usage 单独记录 |
+| `max_summary_chars` | 2000 | 累计摘要 JSON 的字符上限，与 token 阈值独立 |
 | `max_completion_tokens` / `max_output_chars` | 4096 / 16000 | 单次生成 token 上限与输出字符上限，分别约束 |
 | `checks` | `[]` | 默认不配置结果检查 |
 | `network_enabled` | `false` | 默认关闭联网 |
@@ -178,7 +182,13 @@ Web 模型任务提供 `ask_user`：缺少必要信息时，页面显示“需�
 
 一个会话最多保存 100 个完整交互组，序列化总量最多 1 MiB，包含状态和运行关联。一个组由模型回复及其全部工具反馈组成，不等于一次 Run。超过限额明确停止追加，不偷偷删除早期内容；7 天没有成功更新的会话仍会自然过期。Redis 总容量不足时拒绝新增写入，不提前淘汰尚未过期的会话。
 
-阶段 3 只将近期 `recent_history_turns` 个完整组和必要状态交给模型，Redis 保存的全部历史不会全部注入，也尚无累计摘要。输入超过现有上下文预算时明确停止，不扩大原任务预算。
+阶段 4 根据 token 阈值生成一份累计摘要：低于阈值时发送全部未覆盖完整组；达到阈值后，使用当前模型压缩较早的完整组，保留最近 `recent_history_turns` 组，工具调用与反馈不会拆开。Redis 原始组不删除，摘要内容、版本和覆盖序号一次原子提交。新用户指令优先于摘要；摘要是历史资料，不是权限或检查通过证明，也不会写入长期记忆。
+
+当前模型窗口为 1,000,000 tokens，默认显式压缩阈值为 12,000 tokens，有效阈值不超过模型窗口的 90%；输入和输出预留合计不得超过窗口的 95%。请求前使用配置的 tokenizer 对序列化消息、规范、状态、摘要及工具声明计数，明确记为估算；供应商返回的实际 token 用量另行记录，缺失时为未知。独立的 `max_input_chars=64000` 仍生效，不能用字符数冒充 token 数。Qwen 官方提供的请求前估算编码为 `o200k_base`，换模型时必须同时核对窗口和编码。
+
+首次使用 tiktoken 编码可能需要下载其编码数据，可在服务启动前运行 `uv run --locked python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"` 准备缓存。编码不可用时明确失败，不改用字符比例估算。
+
+摘要及其重试占用原模型调用次数、生成上限和总时限，每次请求前至少预留一次最终回答调用。摘要格式、来源、长度、存储或预算失败时停止，未确认提交前不推进覆盖；不裁掉必要信息或继续使用旧摘要执行。近期组本身已占满时不会拆组强行缩减，超过硬输入限制则明确结束。Web 的“项目上下文”可查看摘要版本、覆盖范围和 token 估算，轨迹保存压缩前后字符数、token 估算、实际 usage 和耗时。详细设计与验收见 [阶段 4](docs/STAGE_FOUR_CONTEXT_ACCEPTANCE.md)。
 
 会话不会恢复旧命令、审批或待回答问题。被取消或中断的半组不进入模型协议历史；可能已经发生的操作以只读的“结果未知”说明保留。重启应用后可以读取仍存在的 Redis 会话并明确发起新 Run，旧 Run 仍为中断。Redis 不可达、鉴权失败、数据损坏、会话不存在或过期分别反馈，不静默创建替代会话。
 

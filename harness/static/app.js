@@ -32,6 +32,15 @@ Object.assign(eventNames, {session_loaded: "会话已加载", session_group_save
 Object.assign(reasons, {redis_unavailable: "Redis 不可达，任务已停止。", session_missing_or_expired: "会话不存在或已过期，请明确新建会话。",
   session_data_corrupt: "会话数据损坏，已停止，未重建或替换。", session_group_limit: "会话达到交互组上限，请新建会话。",
   session_byte_limit: "会话达到容量上限，已停止追加。"});
+Object.assign(eventNames, {context_measured: "上下文计量", summary_requested: "请求累计摘要",
+  summary_responded: "收到摘要回复", summary_updated: "累计摘要已保存", summary_failed: "摘要失败并停止",
+  summary_model_error: "摘要模型错误", summary_retry_scheduled: "摘要请求重试"});
+Object.assign(reasons, {summary_model_call_reserve: "模型调用预算不足以生成摘要并保留最终回答，任务已停止。",
+  summary_invalid_response: "摘要结构、长度或来源校验失败，覆盖范围未推进。", summary_not_reduced: "摘要未减少输入占用，任务已停止。",
+  summary_request_timeout: "摘要请求超时，任务已停止。", summary_input_char_limit: "摘要请求超过字符预算，任务已停止。",
+  summary_input_still_exceeded: "摘要后输入仍超过字符预算，任务已停止。",
+  summary_input_token_limit: "摘要请求或摘要后输入超过可用 token 窗口，任务已停止。",
+  input_token_limit: "模型输入与输出预留超过可用 token 窗口。", tokenizer_unavailable: "配置的 tokenizer 不可用，任务已停止。"});
 function text(id, value) { if ($(id).textContent !== String(value ?? "")) $(id).textContent = value ?? ""; }
 function pretty(value) { return JSON.stringify(value, null, 2); }
 function node(tag, className, content) {
@@ -236,6 +245,11 @@ function render(value) {
     if (!plan.length) list.append(node("li", "empty-note", "尚无计划，简单问答可直接回答"));
   }
   text("memory", pretty(value.state?.memory || {}));
+  text("summary-version", value.summary?.version ? "版本 " + value.summary.version + " · 覆盖至完整交互组 " + value.summary.covered_group_seq : "尚无累计摘要");
+  text("context-summary", value.summary?.text || "尚未达到摘要触发条件");
+  text("context-usage", value.context ? "输入估算 " + value.context.input_tokens_estimate + " tokens；压缩阈值 "
+    + value.context.threshold_tokens + " tokens；模型窗口 " + value.context.model_context_window + " tokens；实际输入 "
+    + value.context.input_chars + " 字符；保留 " + value.context.retained_groups + " 个完整组。供应商实际用量见模型与摘要事件。" : "尚无输入计量记录");
   const rules = value.rules;
   text("rules-version", rules ? (rules.present ? "版本 SHA256 " + rules.sha256 : "根目录无 AGENTS.md") : "本次尚未加载规范");
   const rulesContent = rules ? rules.content || "暂无规范内容" : "暂无记录";
@@ -330,6 +344,9 @@ function eventHint(event) {
   if (event.type === "model_retry_scheduled") hint = data.delay_seconds + " 秒后重试";
   if (event.type === "model_error") hint = reasons[data.code] || data.code;
   if (event.type === "context_history_limited") hint = "保留近期交互，省略 " + data.omitted_turns + " 轮旧历史";
+  if (event.type === "summary_updated") hint = "版本 " + data.version + " · 覆盖 " + data.from_group_seq + "–" + data.covered_group_seq
+    + " 组 · 估算 " + data.input_tokens_before_estimate + " → " + data.input_tokens_after_estimate + " tokens";
+  if (event.type === "context_measured") hint = "估算 " + data.input_tokens_estimate + " / 阈值 " + data.threshold_tokens + " tokens";
   if (data.display_truncated) hint = "长详情已截断";
   return clipped(hint);
 }
@@ -465,6 +482,7 @@ function select(run) {
   $("plan").replaceChildren(node("li", "empty-note", "尚无计划，简单问答可直接回答"));
   $("artifacts").replaceChildren(node("li", "empty-note", "暂无产物")); text("file-count", "0");
   text("rules-version", "尚未加载"); renderMarkdown($("rules"), "暂无记录", "answer-content context-markdown"); text("rules-raw", "暂无记录"); text("memory", "{}"); text("metadata", "暂无记录"); text("run-limits", "");
+  text("summary-version", "尚无累计摘要"); text("context-usage", "尚无输入计量记录"); text("context-summary", "尚未达到摘要触发条件");
   $("approval-section").hidden = true;
   $("question-section").hidden = true; $("user-answer").value = "";
   $("completion-report").replaceChildren();

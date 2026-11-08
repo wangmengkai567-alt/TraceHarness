@@ -15,6 +15,7 @@ from redis.asyncio.retry import Retry
 
 from .store import RUN_ID, utc_now
 from .files import digest
+from .compaction import empty_summary, validate_summary
 
 SESSION_ID = re.compile(r"[0-9a-f]{32}")
 PREFIX = "harness:sessions:"
@@ -120,9 +121,9 @@ class Sessions:
                     or not isinstance(doc["project"], str) or not doc["project"]
                     or type(doc["revision"]) is not int or doc["revision"] < 0
                     or not isinstance(doc["groups"], list) or len(doc["groups"]) > self.config.max_session_groups
-                    or not isinstance(doc["interruptions"], list) or not isinstance(doc["requests"], dict)
-                    or doc["summary"] != {"version": 0, "covered_group_seq": 0, "text": ""}):
+                    or not isinstance(doc["interruptions"], list) or not isinstance(doc["requests"], dict)):
                 raise ValueError
+            validate_summary(doc["summary"], len(doc["groups"]), self.config.max_summary_chars)
             for request_id, request in doc["requests"].items():
                 if (not SESSION_ID.fullmatch(request_id) or not isinstance(request, dict)
                         or set(request) != {"run_id", "signature"} or not RUN_ID.fullmatch(request["run_id"])
@@ -182,13 +183,32 @@ class Sessions:
         identifier = uuid4().hex
         doc = {"version": 1, "session_id": identifier, "project": project, "created_at": utc_now(),
                "updated_at": utc_now(), "expires_at": utc_now(), "revision": 0, "groups": [], "state": None,
-               "last_run": None, "interruptions": [], "requests": {}, "summary": {"version": 0, "covered_group_seq": 0, "text": ""}}
+               "last_run": None, "interruptions": [], "requests": {}, "summary": empty_summary()}
         return await self.write(None, doc)
 
     @staticmethod
     def public(doc):
         return {key: doc[key] for key in ("session_id", "project", "created_at", "updated_at", "expires_at", "revision")} | {
-            "group_count": len(doc["groups"]), "last_run": doc["last_run"], "interruptions": doc["interruptions"]}
+            "group_count": len(doc["groups"]), "last_run": doc["last_run"], "interruptions": doc["interruptions"],
+            "summary": doc["summary"]}
+
+    async def save_summary(self, identifier, run_id, previous_summary, summary, expected_group_seq):
+        """One CAS commits content and coverage together; raw groups are never removed."""
+        doc, raw = await self.load(identifier)
+        last = doc["last_run"]
+        if not last or last["run_id"] != run_id or last["status"] != "running" or last["pending"]:
+            raise SessionError("session_run_not_active")
+        if doc["summary"] != previous_summary or len(doc["groups"]) != expected_group_seq:
+            raise SessionError("session_summary_conflict")
+        try:
+            validate_summary(summary, len(doc["groups"]), self.config.max_summary_chars)
+            if (summary["version"] != previous_summary["version"] + 1
+                    or summary["covered_group_seq"] <= previous_summary["covered_group_seq"]):
+                raise ValueError
+        except (ValueError, TypeError, KeyError, RecursionError):
+            raise SessionError("session_summary_invalid") from None
+        doc["summary"] = copy.deepcopy(summary)
+        return await self.write(raw, doc)
 
     async def begin(self, identifier, project, run_id, task, owner, request_id, *, previous_run_finished=False, request_signature=None):
         doc, raw = await self.load(identifier)

@@ -30,6 +30,8 @@ from .workspace import Workspace
 from .sandbox import Sandbox, recover
 from .clarification import ClarificationTools
 from .sessions import SessionError
+from .compaction import parse_summary, summary_prompt, validate_summary
+from .tokens import TokenCounter
 
 T = TypeVar("T")
 
@@ -90,8 +92,8 @@ class Runner:
         tool_calls = 0
         usage: dict[str, int] = {}
         used_ids: set[str] = set()
-        # history 按“模型回复 + 对应工具反馈”分组，供 context 按整组裁剪。
-        history: list[list[dict]] = []
+        summary_calls = 0
+        counter = None
         context = None
         run_tools = self.tools
         recovery = None
@@ -172,6 +174,7 @@ class Runner:
                 "session_id": session_id,
                 "reason": reason, "answer": answer, "verified": status == Status.COMPLETED,
                 "turns": turns, "model_calls": model_calls, "tool_calls": tool_calls,
+                "summary_calls": summary_calls, "summary": context.summary if context else None,
                 "usage": usage, "elapsed_seconds": round(time.monotonic() - started, 3),
                 "finished_at": utc_now(), "run_directory": str(store.directory),
                 "state": context.snapshot() if context else None,
@@ -198,6 +201,99 @@ class Runner:
                 group_seq += 1
                 store.emit("session_group_saved", session_id=session_id, group_seq=group_seq,
                            call_ids=[message["tool_call_id"] for message in group[1:]], duplicate=duplicate)
+            context.record_group(group)
+
+        def request_chars(messages, schemas):
+            return len(json.dumps({"messages": messages, "tools": schemas}, ensure_ascii=False))
+
+        async def compact_context(messages, schemas, compose):
+            nonlocal model_calls, summary_calls
+            groups = context.compressible_groups(config.recent_history_turns)
+            if not groups:
+                return
+            previous = copy.deepcopy(context.summary)
+            summary_messages = summary_prompt(previous, groups, config.max_summary_chars)
+            summary_input_chars = request_chars(summary_messages, [])
+            before = request_chars(messages, schemas)
+            details = {"session_id": session_id, "version": previous["version"] + 1,
+                       "from_group_seq": previous["covered_group_seq"] + 1,
+                       "covered_group_seq": groups[-1]["group_seq"],
+                       "input_chars_before": before, "summary_input_chars": summary_input_chars,
+                       "input_tokens_before_estimate": counter.count(messages, schemas),
+                       "summary_input_tokens_estimate": counter.count(summary_messages, []),
+                       "threshold_tokens": config.compaction_threshold(),
+                       "tokenizer_encoding": config.tokenizer_encoding}
+            began = time.monotonic()
+            try:
+                if summary_input_chars > config.max_input_chars:
+                    raise Halt(Status.BUDGET_EXCEEDED, "summary_input_char_limit")
+                if details["summary_input_tokens_estimate"] + config.max_completion_tokens > config.model_context_window * 95 // 100:
+                    raise Halt(Status.BUDGET_EXCEEDED, "summary_input_token_limit")
+                for attempt in range(config.max_retries + 1):
+                    check()
+                    # Recheck on every attempt: a retry must not spend the answer's last call.
+                    if config.max_model_calls - model_calls < 2:
+                        raise Halt(Status.BUDGET_EXCEEDED, "summary_model_call_reserve")
+                    model_calls += 1
+                    summary_calls += 1
+                    store.emit("summary_requested", **details, attempt=attempt + 1,
+                               model_call=model_calls, messages=summary_messages)
+                    for source_group in groups:
+                        for entry in source_group["messages"]:
+                            call_id = entry.get("tool_call_id")
+                            if entry["role"] == "tool" and call_id in answers:
+                                store.emit("user_answer_used", question_id=answers.pop(call_id),
+                                           tool_call_id=call_id, model_call=model_calls, turn=turns, purpose="summary")
+                    try:
+                        response = await controlled(self.model.complete(summary_messages, []),
+                            config.request_timeout_seconds, "summary_request_timeout")
+                        response = parse_reply({"choices": [{"message": response.message(),
+                            "finish_reason": response.finish_reason}], "usage": response.usage}, config)
+                    except ModelError as error:
+                        for key, value in error.usage.items():
+                            usage[key] = usage.get(key, 0) + value
+                        store.emit("summary_model_error", **details, code=error.code,
+                                   usage=error.usage or None, model_call=model_calls)
+                        if error.code == "model_completion_token_limit":
+                            raise Halt(Status.BUDGET_EXCEEDED, "summary_completion_token_limit") from None
+                        if not error.retryable or attempt >= config.max_retries:
+                            raise ModelError(error.code if error.code.startswith("summary_") else "summary_" + error.code) from None
+                        delay = config.retry_base_seconds * 2 ** attempt
+                        store.emit("summary_retry_scheduled", delay_seconds=delay)
+                        await controlled(asyncio.sleep(delay), delay + 1, "summary_retry_timeout")
+                        continue
+                    for key, value in response.usage.items():
+                        usage[key] = usage.get(key, 0) + value
+                    store.emit("summary_responded", **details, model_call=model_calls,
+                               usage=response.usage or None, message=response.message())
+                    candidate = store.redact(parse_summary(response, previous, groups[-1]["group_seq"],
+                                                          config.max_summary_chars))
+                    validate_summary(candidate, len(context.groups), config.max_summary_chars)
+                    after = request_chars(compose(candidate), schemas)
+                    after_tokens = counter.count(compose(candidate), schemas)
+                    if after > config.max_input_chars:
+                        raise Halt(Status.BUDGET_EXCEEDED, "summary_input_still_exceeded")
+                    if after_tokens + config.max_completion_tokens > config.model_context_window * 95 // 100:
+                        raise Halt(Status.BUDGET_EXCEEDED, "summary_input_token_limit")
+                    if after >= before or after_tokens >= details["input_tokens_before_estimate"]:
+                        raise ModelError("summary_not_reduced")
+                    if sessions:
+                        await controlled(sessions.save_summary(session_id, store.run_id, previous,
+                            candidate, group_seq), 3, "summary_storage_timeout")
+                    # Only a confirmed Redis commit advances the model-visible coverage.
+                    context.summary = candidate
+                    store.write_json("summary.json", candidate)
+                    store.emit("summary_updated", **details, input_chars_after=after,
+                               input_tokens_after_estimate=after_tokens,
+                               summary_chars=len(candidate["text"]), usage=response.usage or None,
+                               elapsed_seconds=round(time.monotonic() - began, 3), summary=candidate)
+                    return
+            except (Halt, ModelError, SessionError, asyncio.CancelledError) as error:
+                reason = (error.reason if isinstance(error, Halt) else
+                          error.code if isinstance(error, (ModelError, SessionError)) else "task_cancelled")
+                store.emit("summary_failed", **details, code=reason,
+                           elapsed_seconds=round(time.monotonic() - began, 3))
+                raise
 
         async def dispatch(call: ToolCall, purpose="task") -> ToolResult:
             # 工具和验收共用的执行入口：计数 → 记录 → 恢复检查 → 执行 → 保存反馈。
@@ -289,6 +385,7 @@ class Runner:
             store.emit("rules_loaded", **rules)
             context = TaskContext(task, rules, store, config.max_state_chars, session_history)
             store.write_json("state.json", context.snapshot())
+            store.write_json("summary.json", context.summary)
             core = (ShellTools(workspace, config, self.approve, store.emit, cancel, network, sandbox=sandbox)
                     if self.approve else network)
             run_tools = RunTools(core, files, context)
@@ -298,52 +395,72 @@ class Runner:
                         config.user_wait_timeout_seconds, max(0, deadline - time.monotonic())))
                 run_tools = ClarificationTools(run_tools, ask)
             recovery = Recovery(files)
+            counter = await controlled(asyncio.to_thread(TokenCounter, config.tokenizer_encoding),
+                                       config.request_timeout_seconds, "tokenizer_timeout")
             # Web 的 ClarificationTools 位于外层；其他调用仍由原工具链处理。
             for turn in range(1, config.max_turns + 1):
-                # 第二阶段：组装当前上下文；历史可裁剪，任务、规范、计划和记忆始终保留。
+                # 第二阶段：阈值以下保留全部未覆盖历史；达到 token 阈值后再累计摘要。
                 check()
                 turns = turn
-                messages, dropped = context.assemble(history, config.recent_history_turns)
-                messages.insert(1, {"role": "system", "content": network.prompt()})
-                messages.insert(1, {"role": "system", "content": "All files and checks use an independent workspace copy. "
-                    "The original directory is never modified. Inputs: " + json.dumps(list(copy_workspace.baseline))
-                    + ". Shell uses Linux syntax in a fixed offline Docker container. Static read-only calls can be "
-                    "automatically allowed; other allowed commands require approval. Outputs are in " + str(workspace)})
-                if checks:
-                    messages.insert(1, {"role": "system", "content": "Operator-configured verification checks: "
-                        + json.dumps(checks, ensure_ascii=False) + ". On your final answer the executor runs these checks. "
-                        "If they fail, repair within remaining budgets and answer again. Shell checks use the same "
-                        "Docker command policy: only verified static read-only calls can run without approval. "
-                        "Previous check evidence: " + json.dumps(check_evidence, ensure_ascii=False)})
-                final_response_only = turn == config.max_turns or concise_recovery
+                final_response_only = (turn == config.max_turns or concise_recovery
+                                       or summary_calls > 0 and model_calls == config.max_model_calls - 1)
                 # 预留最后一轮用于最终回答；生成截断后的恢复轮也禁止继续请求工具。
                 schemas = [] if final_response_only else run_tools.schemas()
-                messages.insert(1, {"role": "system", "content": (
-                    f"Run budget: model response {turn} of {config.max_turns}. "
-                    + ("This last response is reserved for your final answer. No tools are available. "
-                       "Answer now using existing knowledge and observations. State unfinished work and "
-                       "uncertainty honestly. Do not invent results or spend this response updating state."
-                       if final_response_only else
-                       "If you have enough information, answer now without more tools. "
-                       "The last response is reserved for a final answer, not tool execution.")
-                )})
-                if concise_recovery:
-                    # 上轮触及生成上限后，保持原 token 上限，要求用已有证据给出简短回答。
+
+                def compose(summary=None):
+                    messages = context.assemble(summary)
+                    messages.insert(1, {"role": "system", "content": network.prompt()})
+                    messages.insert(1, {"role": "system", "content": "All files and checks use an independent workspace copy. "
+                        "The original directory is never modified. Inputs: " + json.dumps(list(copy_workspace.baseline))
+                        + ". Shell uses Linux syntax in a fixed offline Docker container. Static read-only calls can be "
+                        "automatically allowed; other allowed commands require approval. Outputs are in " + str(workspace)})
+                    if checks:
+                        messages.insert(1, {"role": "system", "content": "Operator-configured verification checks: "
+                            + json.dumps(checks, ensure_ascii=False) + ". On your final answer the executor runs these checks. "
+                            "If they fail, repair within remaining budgets and answer again. Shell checks use the same "
+                            "Docker command policy: only verified static read-only calls can run without approval. "
+                            "Previous check evidence: " + json.dumps(check_evidence, ensure_ascii=False)})
                     messages.insert(1, {"role": "system", "content": (
-                        "The previous response reached the generation limit and was discarded; none of its tools ran. "
-                        f"This request keeps the same {config.max_completion_tokens} completion-token cap. "
-                        "Give a concise final answer using existing observations, preferably within 500 Chinese "
-                        "characters or 250 English words. Prioritize the conclusion and key sources; "
-                        "state missing evidence and unfinished work. Do not request tools or repeat the full analysis."
+                        f"Run budget: model response {turn} of {config.max_turns}. "
+                        + ("This last response is reserved for your final answer. No tools are available. "
+                           "Answer now using existing knowledge and observations. State unfinished work and "
+                           "uncertainty honestly. Do not invent results or spend this response updating state."
+                           if final_response_only else
+                           "If you have enough information, answer now without more tools. "
+                           "The last response is reserved for a final answer, not tool execution.")
                     )})
+                    if concise_recovery:
+                        messages.insert(1, {"role": "system", "content": (
+                            "The previous response reached the generation limit and was discarded; none of its tools ran. "
+                            f"This request keeps the same {config.max_completion_tokens} completion-token cap. "
+                            "Give a concise final answer using existing observations, preferably within 500 Chinese "
+                            "characters or 250 English words. Prioritize the conclusion and key sources; "
+                            "state missing evidence and unfinished work. Do not request tools or repeat the full analysis."
+                        )})
+                    return messages
+
+                messages = compose()
+                input_tokens = counter.count(messages, schemas)
+                if input_tokens >= config.compaction_threshold():
+                    await compact_context(messages, schemas, compose)
+                    final_response_only = (final_response_only or model_calls == config.max_model_calls - 1)
+                    schemas = [] if final_response_only else run_tools.schemas()
+                    messages = compose()
+                    input_tokens = counter.count(messages, schemas)
                 if final_response_only:
                     store.emit("final_response_requested", turn=turn, max_turns=config.max_turns)
-                if dropped:
-                    store.emit("context_history_limited", omitted_turns=dropped)
-                request_size = len(json.dumps({"messages": messages, "tools": schemas},
-                                             ensure_ascii=False))
+                request_size = request_chars(messages, schemas)
                 if request_size > config.max_input_chars:
                     raise Halt(Status.BUDGET_EXCEEDED, "input_char_limit")
+                if input_tokens + config.max_completion_tokens > config.model_context_window * 95 // 100:
+                    raise Halt(Status.BUDGET_EXCEEDED, "input_token_limit")
+                measurement = {"input_chars": request_size, "input_tokens_estimate": input_tokens,
+                    "tokenizer_encoding": config.tokenizer_encoding, "model_context_window": config.model_context_window,
+                    "threshold_tokens": config.compaction_threshold(), "summary_version": context.summary["version"],
+                    "covered_group_seq": context.summary["covered_group_seq"],
+                    "retained_groups": len(context.groups) - context.summary["covered_group_seq"]}
+                store.emit("context_measured", **measurement)
+                store.write_json("context.json", measurement)
                 reply: ModelReply
                 # 请求重试不会增加 turn，但会消耗 model_calls 和总时限。
                 for attempt in range(config.max_retries + 1):
@@ -384,8 +501,8 @@ class Runner:
                         if error.code in REPAIRABLE_MODEL_ERRORS and model_repairs < config.max_model_repairs and not final_response_only:
                             model_repairs += 1
                             store.emit("model_repair_requested", code=error.code, repair=model_repairs)
-                            history.append([{"role": "user", "content": "Executor rejected the model response: "
-                                            + error.code + ". No tools from that response ran. Return a valid response."}])
+                            context.notices.append({"role": "user", "content": "Executor rejected the model response: "
+                                            + error.code + ". No tools from that response ran. Return a valid response."})
                             reply = None
                             break
                         if not error.retryable or attempt >= config.max_retries:
@@ -411,7 +528,7 @@ class Runner:
                         raise ModelError("duplicate_tool_call_id")
                     model_repairs += 1
                     store.emit("model_repair_requested", code="duplicate_tool_call_id", repair=model_repairs)
-                    history.append([{"role": "user", "content": "Duplicate tool call ID rejected; none of this response's tools ran. Use new IDs."}])
+                    context.notices.append({"role": "user", "content": "Duplicate tool call ID rejected; none of this response's tools ran. Use new IDs."})
                     continue
                 used_ids.update(ids)
                 for key, value in reply.usage.items():
@@ -423,7 +540,6 @@ class Runner:
                     store.emit("tool_dispatch_blocked", reason="final_response_only")
                     raise Halt(Status.BUDGET_EXCEEDED, "turn_limit")
                 group = [message]
-                history.append(group)
                 if len(reply.tool_calls) > 1 and any(call.name == "ask_user" for call in reply.tool_calls):
                     # Validate the whole batch before dispatching even its first operation.
                     if tool_calls + len(reply.tool_calls) > config.max_tool_calls:
@@ -456,9 +572,9 @@ class Runner:
                         return await finish(Status.COMPLETED, "configured_checks_passed", reply.content)
                     if final_response_only or verification_attempts >= config.max_verification_attempts:
                         return await finish(Status.VERIFICATION_FAILED, "configured_checks_failed", reply.content)
-                    history.append([{"role": "user", "content": "Executor verification failed. Correct the work and plan if possible, "
+                    context.notices.append({"role": "user", "content": "Executor verification failed. Correct the work and plan if possible, "
                                     "then give a new final answer; shell checks use the same Docker policy and one-use approval. Evidence: "
-                                    + json.dumps(check_evidence, ensure_ascii=False)}])
+                                    + json.dumps(check_evidence, ensure_ascii=False)})
                     continue
                 if sessions:
                     if group_seq >= config.max_session_groups:

@@ -62,14 +62,17 @@ def parse_reply(payload: dict, config: Config) -> ModelReply:
             calls.append(call)
         if len({call.id for call in calls}) != len(calls):
             raise ModelError("duplicate_tool_call_id")
-        output_size = len(json.dumps(message, ensure_ascii=False))
+        reply = ModelReply(content, tuple(calls), usage, reason)
+        # Bound what the harness retains and forwards, not vendor-only reasoning/metadata.
+        # The complete raw response still has its independent HTTP byte limit.
+        output_size = len(json.dumps(reply.message(), ensure_ascii=False))
         if output_size > config.max_output_chars:
-            raise ModelError("model_output_limit")
+            raise ModelError("model_output_limit", usage=usage)
         if reason == "tool_calls" and not calls:
             raise ValueError
         if not calls and not (content and content.strip()):
             raise ModelError("model_empty_response")
-        return ModelReply(content, tuple(calls), usage, reason)
+        return reply
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
         raise ModelError("model_invalid_response") from exc
 

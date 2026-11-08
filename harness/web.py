@@ -385,7 +385,10 @@ class RunManager:
                     if len(wire) > DETAIL_LIMIT:
                         # 大段消息仅展示预览，但保留轮次、尝试次数等字段供界面显示进度。
                         progress = {key: event["data"][key]
-                                    for key in ("turn", "attempt", "model_call", "final_response_only")
+                                    for key in ("turn", "attempt", "model_call", "final_response_only", "version",
+                                                "from_group_seq", "covered_group_seq", "input_chars_before",
+                                                "input_chars_after", "input_tokens_before_estimate", "input_tokens_after_estimate",
+                                                "threshold_tokens", "summary_chars", "usage", "code")
                                     if key in event["data"]}
                         event["data"] = {**progress, "preview": wire[:DETAIL_LIMIT], "display_truncated": True}
                     events.append(event)
@@ -410,6 +413,7 @@ class RunManager:
                 "result": result, "artifacts": manifest["changes"], "workspace_manifest": manifest,
                 "sandbox": read_json(folder / "sandbox.json", {"containers": []}),
                 "network": read_json(folder / "sources.json", {}),
+                "summary": read_json(folder / "summary.json"), "context": read_json(folder / "context.json"),
                 "checks": {"verified": bool(result and result.get("verified")),
                            "evidence": result.get("checks", []) if result else [],
                            "note": ("仅所配置检查项通过，不代表全部需求已验证。" if result and result.get("verified") else
