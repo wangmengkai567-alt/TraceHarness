@@ -32,6 +32,7 @@ from .clarification import ClarificationTools
 from .sessions import SessionError
 from .compaction import parse_summary, summary_prompt, validate_summary
 from .tokens import TokenCounter
+from .memory import Memory, MemoryError, project_scope
 
 T = TypeVar("T")
 
@@ -110,6 +111,9 @@ class Runner:
         session_failed = False
         group_seq = 0
         checks = copy.deepcopy(config.checks)
+        memory = Memory(config, self.secrets)
+        memory_entries, memory_refs = [], []
+        project = project_scope(str(source_workspace))
         # 固定本次验收配置，避免外部修改列表影响正在运行的任务。
         store.write_json("metadata.json", {
             "schema_version": 1, "run_id": store.run_id, "started_at": utc_now(),
@@ -128,6 +132,8 @@ class Runner:
                 raise Halt(Status.CANCELLED, "user_cancelled")
             if time.monotonic() >= deadline:
                 raise Halt(Status.BUDGET_EXCEEDED, "total_timeout")
+            if memory_refs and not memory.current(memory_refs, project):
+                raise MemoryError("memory_changed_during_run")
 
         async def controlled(operation: Awaitable[T], timeout: float, code: str) -> T:
             # 同时等待操作完成和用户取消，并取“局部时限/剩余总时限”中较短的一个。
@@ -175,6 +181,7 @@ class Runner:
                 "reason": reason, "answer": answer, "verified": status == Status.COMPLETED,
                 "turns": turns, "model_calls": model_calls, "tool_calls": tool_calls,
                 "summary_calls": summary_calls, "summary": context.summary if context else None,
+                "long_term_memory": memory_entries,
                 "usage": usage, "elapsed_seconds": round(time.monotonic() - started, 3),
                 "finished_at": utc_now(), "run_directory": str(store.directory),
                 "state": context.snapshot() if context else None,
@@ -356,17 +363,33 @@ class Runner:
         try:
             # 第一阶段：加载规范快照、初始化计划记忆，并组合本次可用的工具。
             check()
+            memory_entries = memory.retrieve(project, task)
+            memory_refs = [{key: entry[key] for key in ("id", "version", "scope")} for entry in memory_entries]
             if sessions:
                 doc, session_history = await controlled(sessions.begin(session_id, os.path.normcase(str(workspace)),
                     store.run_id, store.redact(task), session_owner, request_id,
-                    previous_run_finished=True, request_signature=request_signature), 3, "session_timeout")
+                    previous_run_finished=True, request_signature=request_signature,
+                    memory=memory, memory_refs=memory_refs), 3, "session_timeout")
                 group_seq = len(doc["groups"])
                 session_started = True
                 store.emit("session_loaded", session_id=session_id, group_count=group_seq,
                            recent_groups=config.recent_history_turns)
                 # This is an evidence snapshot only; subsequent loads always use Redis.
                 store.write_json("session.json", sessions.public(doc))
+                memory_refs = doc["memory_dependencies"][store.run_id]
+                invalidated_runs = sorted(set(doc["memory_invalidated_runs"]) - set(session_history["memory_invalidated_runs"]))
+                if invalidated_runs:
+                    store.emit("long_term_memory_invalidated", run_ids=invalidated_runs,
+                               note="Derived history and summary withheld; raw audit history retained.")
+            store.write_json("long_term_memory.json", {"entries": memory_entries, "references": memory_refs})
+            store.emit("long_term_memory_selected", references=memory_refs,
+                       sources=[entry["source"] for entry in memory_entries])
             await controlled(recover(Path(config.runs_dir).resolve()), 60, "sandbox_recovery_timeout")
+            for name in input_files or []:
+                candidate = (source_workspace / name).resolve()
+                if candidate.parent == memory.path.parent and candidate.name in {
+                        memory.path.name, memory.path.name + "-journal", memory.path.name + "-wal", memory.path.name + "-shm"}:
+                    raise MemoryError("memory_database_not_an_input")
             copy_workspace = Workspace(workspace, [] if input_files is None else input_files, store)
             workspace = copy_workspace.root
             metadata = json.loads((store.directory / "metadata.json").read_text(encoding="utf-8"))
@@ -383,7 +406,7 @@ class Runner:
                 raise Halt(Status.FAILED, "rules_access_error") from None
             store.write_json("rules.json", rules)
             store.emit("rules_loaded", **rules)
-            context = TaskContext(task, rules, store, config.max_state_chars, session_history)
+            context = TaskContext(task, rules, store, config.max_state_chars, session_history, memory_entries)
             store.write_json("state.json", context.snapshot())
             store.write_json("summary.json", context.summary)
             core = (ShellTools(workspace, config, self.approve, store.emit, cancel, network, sandbox=sandbox)
@@ -594,6 +617,9 @@ class Runner:
         except SessionError as error:
             session_failed = True
             store.emit("session_error", session_id=session_id, code=error.code)
+            return await finish(Status.FAILED, error.code)
+        except MemoryError as error:
+            store.emit("long_term_memory_error", code=error.code)
             return await finish(Status.FAILED, error.code)
         except ModelError as error:
             return await finish(Status.FAILED, error.code)

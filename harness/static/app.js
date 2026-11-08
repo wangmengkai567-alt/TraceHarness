@@ -6,6 +6,7 @@ let snapshot = null, runs = [], nextHistory = 0, activeTab = "answer";
 let lastNetworkKey = "";
 let lastRulesContent = null;
 let currentSession = null, pendingRunRequest = null;
+let editingMemory = null, memoryBusy = false;
 let lastReportKey = "";
 let displayedLogs = 0, observedTurn = 0, lastAnswerKey = "", lastPlanKey = "", lastHistoryKey = "", prefilledRun = "", formDirty = false;
 const seen = new Set();
@@ -30,6 +31,7 @@ reasons.user_wait_timeout = "等待用户回答超过时限，任务已结束。
 Object.assign(eventNames, {session_loaded: "会话已加载", session_group_saved: "会话交互已保存",
   session_run_finished: "会话运行状态已保存", session_error: "会话存储错误"});
 Object.assign(reasons, {redis_unavailable: "Redis 不可达，任务已停止。", session_missing_or_expired: "会话不存在或已过期，请明确新建会话。",
+  session_version_unsupported: "此会话使用旧版协议，请新建会话；历史运行记录仍可查看。",
   session_data_corrupt: "会话数据损坏，已停止，未重建或替换。", session_group_limit: "会话达到交互组上限，请新建会话。",
   session_byte_limit: "会话达到容量上限，已停止追加。"});
 Object.assign(eventNames, {context_measured: "上下文计量", summary_requested: "请求累计摘要",
@@ -87,7 +89,82 @@ function controls() {
   $("user-answer").disabled = posting || !questionPending;
   $("submit-answer").disabled = posting || !questionPending || !$("user-answer").value?.trim();
   $("copy-answer").disabled = !snapshot?.result?.answer;
+  $("memory-save").disabled = posting || memoryBusy || active;
+  $("memory-refresh").disabled = memoryBusy;
+  $("memory-reset").disabled = memoryBusy;
 }
+
+Object.assign(eventNames, {long_term_memory_selected: "已检索长期记忆",
+  long_term_memory_invalidated: "旧记忆依赖已失效", long_term_memory_error: "长期记忆错误"});
+Object.assign(reasons, {memory_unavailable: "SQLite 长期记忆不可用，任务已停止。",
+  memory_changed_during_run: "本次依赖的长期条目已变化或失效，任务已停止，请核对后发起新任务。"});
+function memoryScope() {
+  return {workspace: $("workspace").value, scope: $("memory-scope").value,
+    global_authorized: $("memory-scope").value === "global" && $("memory-global-consent").checked};
+}
+function resetMemory() {
+  editingMemory = null;
+  for (const id of ["memory-topic", "memory-content", "memory-source", "memory-expiry"]) $(id).value = "";
+  text("memory-editing", "新增条目"); text("memory-save", "明确保存");
+}
+async function loadMemories() {
+  const scope = memoryScope();
+  const value = await api("/api/memory/list", scope);
+  const list = $("memory-list"); list.replaceChildren();
+  for (const entry of value.entries) {
+    const item = node("article", "saved-memory-entry");
+    item.append(node("strong", "", entry.topic), node("p", "", entry.content),
+      node("p", "muted", entry.kind + " · v" + entry.version + " · " + entry.scope),
+      node("p", "muted", "来源：" + entry.source + " · 更新：" + dateText(entry.updated_at)),
+      node("p", "muted", "条目：" + entry.id + (entry.valid_until ? " · 失效：" + dateText(entry.valid_until) : "")));
+    const edit = node("button", "outline compact", "修改此条目"); edit.type = "button";
+    edit.addEventListener("click", () => {
+      if (memoryBusy) return;
+      editingMemory = {id: entry.id, version: entry.version, scope};
+      $("memory-topic").value = entry.topic; $("memory-content").value = entry.content;
+      $("memory-source").value = entry.source; $("memory-kind").value = entry.kind;
+      if (entry.valid_until) {
+        const date = new Date(entry.valid_until);
+        $("memory-expiry").value = new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      } else $("memory-expiry").value = "";
+      text("memory-editing", "正在修改 " + entry.id + " · v" + entry.version);
+      text("memory-save", "明确更新此条目");
+    });
+    const remove = node("button", "outline compact", "删除此条目"); remove.type = "button";
+    remove.addEventListener("click", () => void memoryOperation(async () => {
+      await api("/api/memory/delete", {...scope, id: entry.id, version: entry.version});
+      resetMemory(); await loadMemories();
+      text("memory-status", "已删除；后续输入排除旧条目及其派生内容。原始审计记录保留。");
+    }));
+    const actions = node("div", "actions"); actions.append(edit, remove); item.append(actions); list.append(item);
+  }
+  text("memory-status", value.entries.length + " 条 · " + (scope.scope === "global" ? "全局偏好" : scope.workspace));
+}
+async function memoryOperation(operation) {
+  if (memoryBusy) return;
+  memoryBusy = true; controls();
+  try { await operation(); }
+  catch (e) { text("memory-status", "操作未确认：" + e.message + "。请刷新核对版本后再操作。"); }
+  finally { memoryBusy = false; controls(); }
+}
+$("memory-refresh").addEventListener("click", () => void memoryOperation(loadMemories));
+$("memory-reset").addEventListener("click", resetMemory);
+for (const id of ["memory-scope", "memory-global-consent", "workspace"]) {
+  $(id).addEventListener("change", () => { resetMemory(); $("memory-list").replaceChildren(); text("memory-status", "范围已变化，请重新查看条目。"); });
+}
+$("memory-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  void memoryOperation(async () => {
+    const scope = memoryScope();
+    if (editingMemory && pretty(scope) !== pretty(editingMemory.scope)) throw new Error("作用范围已变化，请重新查看条目");
+    const body = {...scope, topic: $("memory-topic").value, content: $("memory-content").value,
+      kind: $("memory-kind").value, source: $("memory-source").value,
+      valid_until: $("memory-expiry").value ? new Date($("memory-expiry").value).toISOString() : null};
+    if (editingMemory) Object.assign(body, {id: editingMemory.id, version: editingMemory.version});
+    await api("/api/memory/" + (editingMemory ? "update" : "create"), body);
+    resetMemory(); await loadMemories(); text("memory-status", "已保存；按作用范围及任务关键词用于后续输入。");
+  });
+});
 function setTab(name, focus = false) {
   if (!["answer", "files", "trace", "tools", "context"].includes(name)) return;
   activeTab = name;
@@ -247,6 +324,7 @@ function render(value) {
   text("memory", pretty(value.state?.memory || {}));
   text("summary-version", value.summary?.version ? "版本 " + value.summary.version + " · 覆盖至完整交互组 " + value.summary.covered_group_seq : "尚无累计摘要");
   text("context-summary", value.summary?.text || "尚未达到摘要触发条件");
+  text("long-term-used", pretty(value.long_term_memory || {entries: [], references: []}));
   text("context-usage", value.context ? "输入估算 " + value.context.input_tokens_estimate + " tokens；压缩阈值 "
     + value.context.threshold_tokens + " tokens；模型窗口 " + value.context.model_context_window + " tokens；实际输入 "
     + value.context.input_chars + " 字符；保留 " + value.context.retained_groups + " 个完整组。供应商实际用量见模型与摘要事件。" : "尚无输入计量记录");
@@ -483,6 +561,7 @@ function select(run) {
   $("artifacts").replaceChildren(node("li", "empty-note", "暂无产物")); text("file-count", "0");
   text("rules-version", "尚未加载"); renderMarkdown($("rules"), "暂无记录", "answer-content context-markdown"); text("rules-raw", "暂无记录"); text("memory", "{}"); text("metadata", "暂无记录"); text("run-limits", "");
   text("summary-version", "尚无累计摘要"); text("context-usage", "尚无输入计量记录"); text("context-summary", "尚未达到摘要触发条件");
+  text("long-term-used", "尚无长期记忆注入记录");
   $("approval-section").hidden = true;
   $("question-section").hidden = true; $("user-answer").value = "";
   $("completion-report").replaceChildren();

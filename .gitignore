@@ -1,5 +1,6 @@
 .venv/
 .redis/
+.memory/
 __pycache__/
 *.py[cod]
 *.egg-info/

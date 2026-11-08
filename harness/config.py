@@ -36,6 +36,9 @@ class Config:
     session_ttl_seconds: float = 604800  # 成功更新后 7 天过期；读取不续期。
     max_session_groups: int = 100  # 会话完整交互组上限，达到时明确停止。
     max_session_bytes: int = 1048576  # Redis 会话序列化 UTF-8 字节上限。
+    memory_db_path: str = ".memory/entries.sqlite3"  # 宿主 SQLite；不复制进任务工作目录。
+    memory_retrieval_limit: int = 5  # 单次输入最多检索的长期条目。
+    max_memory_chars: int = 6000  # 长期条目 JSON 注入上限，超限条目整条省略。
     shell_timeout_seconds: float = 60  # 单条 Shell 命令允许申请的最大执行时限。
     # 暂时性请求错误按指数退避重试，等待时间为 retry_base_seconds * 2**attempt。
     max_retries: int = 2  # 首次请求失败后最多再尝试几次。
@@ -82,11 +85,13 @@ class Config:
             raise ValueError("network_enabled must be boolean")
         if self.provider != "openai_compatible":
             raise ValueError("provider must be openai_compatible; simulated providers are not supported")
-        for name in ("model", "base_url", "runs_dir", "tokenizer_encoding"):
+        for name in ("model", "base_url", "runs_dir", "tokenizer_encoding", "memory_db_path"):
             if not isinstance(getattr(self, name), str):
                 raise ValueError(f"{name} must be text")
         if not self.runs_dir.strip():
             raise ValueError("runs_dir must not be empty")
+        if not self.memory_db_path.strip():
+            raise ValueError("memory_db_path must not be empty")
         if not self.tokenizer_encoding.strip():
             raise ValueError("tokenizer_encoding must not be empty")
         if self.auto_compact_token_limit is not None and (
@@ -95,6 +100,7 @@ class Config:
         integers = (
             "max_turns", "max_model_calls", "max_tool_calls_per_turn",
             "redis_port", "max_session_groups", "max_session_bytes",
+            "memory_retrieval_limit", "max_memory_chars",
             "max_input_chars", "max_output_chars", "max_response_bytes",
             "max_completion_tokens",
             "max_file_bytes", "max_rules_bytes", "max_directory_entries",
@@ -109,6 +115,8 @@ class Config:
                 raise ValueError(f"{name} must be a positive integer")
         if self.max_output_chars < 128:
             raise ValueError("max_output_chars must be at least 128")
+        if self.memory_retrieval_limit > 20 or self.max_memory_chars < 512:
+            raise ValueError("memory limits require 1..20 entries and at least 512 characters")
         if self.max_completion_tokens >= self.model_context_window * 95 // 100:
             raise ValueError("max_completion_tokens must fit the model's usable context window")
         if self.network_enabled and self.max_output_chars < 4096:

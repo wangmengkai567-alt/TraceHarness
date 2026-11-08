@@ -207,3 +207,12 @@ pre { background: #f2f6f7; color: #52687c; font: 11px/1.8 Consolas, "Microsoft Y
 .session-controls .actions { flex-wrap: wrap; gap: 7px; }
 .session-controls button { font-size: 11px; padding: 7px; }
 .session-controls p { overflow-wrap: anywhere; }
+/* User-managed long-term entries share the workbench's existing form controls. */
+.memory-card { padding: 18px; }
+.memory-card summary { cursor: pointer; font-weight: 600; }
+.memory-card label { display: block; margin-top: 12px; }
+.memory-card input:not([type="checkbox"]), .memory-card textarea, .memory-card select { width: 100%; box-sizing: border-box; }
+.memory-card .memory-consent { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; }
+.saved-memory-list { max-height: 420px; overflow: auto; margin-block: 12px; }
+.saved-memory-entry { padding: 12px 0; border-bottom: 1px solid #e5e7eb; overflow-wrap: anywhere; }
+.saved-memory-entry p { white-space: pre-wrap; }

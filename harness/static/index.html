@@ -27,6 +27,27 @@
           <button id="demo" type="button" class="quiet full">模拟审批演练</button>
         </form>
       </section>
+      <section class="card memory-card">
+        <details><summary>长期记忆</summary>
+          <p class="muted">仅保存你在此明确提交的信息。项目条目只用于当前项目；全局仅保存偏好。请勿保存凭据。</p>
+          <label for="memory-scope">作用范围（项目使用上方工作目录）</label>
+          <select id="memory-scope"><option value="project">当前项目</option><option value="global">全局偏好</option></select>
+          <label class="memory-consent"><input id="memory-global-consent" type="checkbox">我明确授权此全局偏好用于所有项目</label>
+          <button id="memory-refresh" type="button" class="outline">查看 / 刷新条目</button>
+          <p id="memory-status" class="muted" role="status" aria-live="polite">尚未读取</p>
+          <div id="memory-list" class="saved-memory-list"></div>
+          <form id="memory-form">
+            <p id="memory-editing" class="muted">新增条目</p>
+            <label for="memory-topic">主题（用于关键词检索）</label><input id="memory-topic" maxlength="120" required>
+            <label for="memory-kind">类型</label><select id="memory-kind"><option value="preference">偏好</option><option value="fact">事实（仅项目）</option></select>
+            <label for="memory-content">内容</label><textarea id="memory-content" rows="3" maxlength="2000" required></textarea>
+            <label for="memory-source">来源说明</label><input id="memory-source" maxlength="300" placeholder="例如：本人确认的报告格式要求" required>
+            <label for="memory-expiry">失效时间（可选）</label><input id="memory-expiry" type="datetime-local">
+            <div class="actions"><button id="memory-save" type="submit" class="primary">明确保存</button><button id="memory-reset" type="button" class="outline">清空编辑</button></div>
+          </form>
+          <p class="muted">运行中不能修改。更新、删除在后续输入中生效；历史审计记录保留。</p>
+        </details>
+      </section>
       <section class="card recent-card"><div class="section-heading"><h2><span class="heading-icon" aria-hidden="true">◷</span>最近任务</h2><span id="history-count" class="muted">0 项</span></div><label for="history" class="sr-only">查看运行记录</label><select id="history"><option value="">请选择运行</option></select><div id="recent-runs" class="recent-list"><p class="empty-note">任务开始后会保存在这里</p></div></section>
     </aside>
     <div class="workspace-column">
@@ -54,7 +75,7 @@
           <div id="panel-files" class="tab-panel" role="tabpanel" aria-labelledby="tab-files" hidden><div class="panel-intro"><h2>生成文件</h2><p>工作副本结束时新增、修改或删除的文件。</p></div><ul id="artifacts" class="artifact-list"><li class="empty-note">暂无产物</li></ul><p class="muted"><span id="manifest-status">任务结束后采集差异；未完整采集时会明确标记。</span></p></div>
           <div id="panel-trace" class="tab-panel" role="tabpanel" aria-labelledby="tab-trace" hidden><div class="panel-intro"><h2>执行轨迹 <span id="event-count" class="count-label">0 条事件</span></h2><p>按序号记录完整过程，展开查看参数与反馈。</p></div><p class="bounded-note">页面最多保留最近 300 条详情，完整事件保存在本地日志。</p><div id="events" class="event-details"></div></div>
           <div id="panel-tools" class="tab-panel" role="tabpanel" aria-labelledby="tab-tools" hidden><div class="panel-intro"><h2>工具调用</h2><p>查看工具参数、返回结果和执行错误。</p></div><div id="web-sources"></div><div id="tool-events" class="event-details"></div><p id="tools-empty" class="empty-note">本次运行尚无工具调用</p></div>
-          <div id="panel-context" class="tab-panel" role="tabpanel" aria-labelledby="tab-context" hidden><div class="panel-intro"><h2>项目上下文</h2><p>本次使用的规范快照、任务记忆与运行配置。</p></div><details class="context-details" open><summary>项目规范 · AGENTS.md</summary><p id="rules-version" class="muted">尚未加载</p><div id="rules" class="answer-content context-markdown">暂无记录</div><details class="raw-details"><summary>查看规范原文</summary><pre id="rules-raw">暂无记录</pre></details></details><details class="context-details"><summary>任务内记忆</summary><pre id="memory">暂无记录</pre></details><details class="context-details"><summary>累计摘要与上下文占用</summary><p id="summary-version" class="muted">尚无累计摘要</p><p id="context-usage" class="muted">尚无输入计量记录</p><pre id="context-summary">尚未达到摘要触发条件</pre></details><details class="context-details"><summary>任务与配置快照</summary><pre id="metadata">暂无记录</pre><p id="run-limits" class="muted"></p></details></div>
+          <div id="panel-context" class="tab-panel" role="tabpanel" aria-labelledby="tab-context" hidden><div class="panel-intro"><h2>项目上下文</h2><p>本次使用的规范快照、任务记忆与运行配置。</p></div><details class="context-details" open><summary>项目规范 · AGENTS.md</summary><p id="rules-version" class="muted">尚未加载</p><div id="rules" class="answer-content context-markdown">暂无记录</div><details class="raw-details"><summary>查看规范原文</summary><pre id="rules-raw">暂无记录</pre></details></details><details class="context-details"><summary>本次长期记忆与版本引用</summary><pre id="long-term-used">尚无长期记忆注入记录</pre></details><details class="context-details"><summary>任务内记忆</summary><pre id="memory">暂无记录</pre></details><details class="context-details"><summary>累计摘要与上下文占用</summary><p id="summary-version" class="muted">尚无累计摘要</p><p id="context-usage" class="muted">尚无输入计量记录</p><pre id="context-summary">尚未达到摘要触发条件</pre></details><details class="context-details"><summary>任务与配置快照</summary><pre id="metadata">暂无记录</pre><p id="run-limits" class="muted"></p></details></div>
         </section>
         <aside class="inspector-column">
           <section class="card overview-card"><div class="section-heading"><h2>运行概览</h2><span id="overview-badge" class="status-badge" data-status="idle">待运行</span></div><dl class="overview-list"><div><dt>开始时间</dt><dd id="started-at">—</dd></div><div><dt>结束时间</dt><dd id="finished-at">—</dd></div><div><dt>总耗时</dt><dd id="elapsed">—</dd></div><div><dt>交互轮数</dt><dd id="turn-progress">—</dd></div><div><dt>工作目录</dt><dd id="overview-workspace">—</dd></div><div><dt>使用模型</dt><dd id="overview-model">—</dd></div><div><dt>任务 ID</dt><dd id="run-meta">—</dd></div></dl></section>

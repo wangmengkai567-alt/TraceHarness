@@ -30,6 +30,7 @@ from .processes import TerminationUnconfirmed
 from .contracts import ToolResult
 from .clarification import MAX_ANSWER_CHARS
 from .sessions import Sessions, SessionError
+from .memory import Memory, MemoryError
 from urllib.parse import parse_qs, quote
 
 STATIC = Path(__file__).with_name("static")
@@ -98,6 +99,7 @@ class RunManager:
         password = os.environ.get("HARNESS_REDIS_PASSWORD", "")
         if password:
             self.secrets += (password,)
+        self.memory = Memory(config, self.secrets)
 
     def folder(self, run_id: str) -> Path:
         # 从受校验的运行 ID 定位记录目录，拒绝符号链接及越出记录根目录的路径。
@@ -414,6 +416,7 @@ class RunManager:
                 "sandbox": read_json(folder / "sandbox.json", {"containers": []}),
                 "network": read_json(folder / "sources.json", {}),
                 "summary": read_json(folder / "summary.json"), "context": read_json(folder / "context.json"),
+                "long_term_memory": read_json(folder / "long_term_memory.json", {"entries": [], "references": []}),
                 "checks": {"verified": bool(result and result.get("verified")),
                            "evidence": result.get("checks", []) if result else [],
                            "note": ("仅所配置检查项通过，不代表全部需求已验证。" if result and result.get("verified") else
@@ -424,6 +427,13 @@ class RunManager:
 
     async def dispatch(self, method: str, path: str, body=None):
         # 业务路由：运行列表/详情、启动、事件增量、取消、审批；不负责 HTTP 安全校验。
+        if method == "POST" and path == "/api/memory/list":
+            return {"entries": self.memory.list(body)}
+        if method == "POST" and path in {"/api/memory/create", "/api/memory/update", "/api/memory/delete"}:
+            # No edits while an input/model/tool batch is in flight. Read requests remain available.
+            if self.active and self.active.job and not self.active.job.done():
+                raise APIError(409, "memory_run_active")
+            return {"entry": self.memory.mutate(path.rsplit("/", 1)[1], body)}
         if method == "POST" and path == "/api/sessions":
             if set(body) != {"workspace"} or not isinstance(body["workspace"], str) or not body["workspace"].strip():
                 raise APIError(400, "invalid_session_project")
@@ -613,6 +623,12 @@ def create_app(manager: RunManager, port: int = 8765) -> FastAPI:
     async def session_error(request, error):
         status = (503 if error.code.startswith("redis_") else 410 if error.code == "session_missing_or_expired"
                   else 400 if error.code == "invalid_session_id" else 409)
+        return JSONResponse({"error": error.code}, status_code=status)
+
+    @app.exception_handler(MemoryError)
+    async def memory_error(request, error):
+        status = (503 if error.code == "memory_unavailable" else 404 if error.code == "memory_not_found"
+                  else 409 if error.code in {"memory_version_conflict", "memory_topic_conflict", "memory_audit_limit", "memory_entry_limit"} else 400)
         return JSONResponse({"error": error.code}, status_code=status)
 
     return app

@@ -16,6 +16,7 @@ from redis.asyncio.retry import Retry
 from .store import RUN_ID, utc_now
 from .files import digest
 from .compaction import empty_summary, validate_summary
+from .memory import validate_refs, MemoryError
 
 SESSION_ID = re.compile(r"[0-9a-f]{32}")
 PREFIX = "harness:sessions:"
@@ -116,14 +117,26 @@ class Sessions:
             if len(raw) > self.config.max_session_bytes:
                 raise ValueError
             doc = json.loads(raw)
-            if (not isinstance(doc, dict) or set(doc) != {"version", "session_id", "project", "created_at", "updated_at", "expires_at", "revision", "groups", "state", "last_run", "interruptions", "summary", "requests"}
-                    or type(doc["version"]) is not int or doc["version"] != 1 or doc["session_id"] != identifier
+            if isinstance(doc, dict) and type(doc.get("version")) is int and doc["version"] == 1:
+                raise SessionError("session_version_unsupported")
+            if (not isinstance(doc, dict) or set(doc) != {"version", "session_id", "project", "created_at", "updated_at", "expires_at", "revision", "groups", "state", "last_run", "interruptions", "summary", "requests", "memory_dependencies", "memory_invalidated_runs"}
+                    or type(doc["version"]) is not int or doc["version"] != 2 or doc["session_id"] != identifier
                     or not isinstance(doc["project"], str) or not doc["project"]
                     or type(doc["revision"]) is not int or doc["revision"] < 0
                     or not isinstance(doc["groups"], list) or len(doc["groups"]) > self.config.max_session_groups
                     or not isinstance(doc["interruptions"], list) or not isinstance(doc["requests"], dict)):
                 raise ValueError
             validate_summary(doc["summary"], len(doc["groups"]), self.config.max_summary_chars)
+            if not isinstance(doc["memory_dependencies"], dict):
+                raise ValueError
+            for run_id, refs in doc["memory_dependencies"].items():
+                if not RUN_ID.fullmatch(run_id):
+                    raise ValueError
+                validate_refs(refs)
+            if (not isinstance(doc["memory_invalidated_runs"], list)
+                    or any(not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id)
+                           for run_id in doc["memory_invalidated_runs"])):
+                raise ValueError
             for request_id, request in doc["requests"].items():
                 if (not SESSION_ID.fullmatch(request_id) or not isinstance(request, dict)
                         or set(request) != {"run_id", "signature"} or not RUN_ID.fullmatch(request["run_id"])
@@ -155,7 +168,7 @@ class Sessions:
                         or validate_group(group["messages"]) != group["call_ids"]):
                     raise ValueError
             return doc
-        except (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError):
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError, OverflowError, MemoryError):
             raise SessionError("session_data_corrupt") from None
 
     async def load(self, identifier):
@@ -181,9 +194,10 @@ class Sessions:
 
     async def create(self, project):
         identifier = uuid4().hex
-        doc = {"version": 1, "session_id": identifier, "project": project, "created_at": utc_now(),
+        doc = {"version": 2, "session_id": identifier, "project": project, "created_at": utc_now(),
                "updated_at": utc_now(), "expires_at": utc_now(), "revision": 0, "groups": [], "state": None,
-               "last_run": None, "interruptions": [], "requests": {}, "summary": empty_summary()}
+               "last_run": None, "interruptions": [], "requests": {}, "summary": empty_summary(),
+               "memory_dependencies": {}, "memory_invalidated_runs": []}
         return await self.write(None, doc)
 
     @staticmethod
@@ -210,7 +224,8 @@ class Sessions:
         doc["summary"] = copy.deepcopy(summary)
         return await self.write(raw, doc)
 
-    async def begin(self, identifier, project, run_id, task, owner, request_id, *, previous_run_finished=False, request_signature=None):
+    async def begin(self, identifier, project, run_id, task, owner, request_id, *, previous_run_finished=False,
+                    request_signature=None, memory=None, memory_refs=None):
         doc, raw = await self.load(identifier)
         if doc["project"] != project:
             raise SessionError("session_project_mismatch")
@@ -227,6 +242,14 @@ class Sessions:
             doc["interruptions"].append({"run_id": last["run_id"], "status": last["status"],
                 "pending": last["pending"], "note": "Incomplete interaction; outcomes unknown. Never replay or infer success."})
         history = copy.deepcopy(doc)
+        if memory is not None:
+            history, invalidated = memory.filter_history(history, project)
+            refs = memory.dependencies(memory_refs, history)
+            doc["memory_dependencies"][run_id] = refs
+            if invalidated:
+                doc["summary"] = history["summary"] = empty_summary()
+                doc["state"] = None
+                doc["memory_invalidated_runs"] = sorted(set(doc["memory_invalidated_runs"]) | set(invalidated))
         doc["requests"][request_id] = {"run_id": run_id, "signature": request_signature or digest(task.encode("utf-8"))}
         doc["last_run"] = {"run_id": run_id, "owner": owner, "task": task, "status": "running", "started_at": utc_now(), "pending": []}
         doc = await self.write(raw, doc)
