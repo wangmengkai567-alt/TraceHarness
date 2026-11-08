@@ -6,7 +6,7 @@ let snapshot = null, runs = [], nextHistory = 0, activeTab = "answer";
 let lastNetworkKey = "";
 let lastRulesContent = null;
 let currentSession = null, pendingRunRequest = null;
-let editingMemory = null, memoryBusy = false;
+let editingMemory = null, memoryBusy = false, memoryGeneration = 0;
 let lastReportKey = "";
 let displayedLogs = 0, observedTurn = 0, lastAnswerKey = "", lastPlanKey = "", lastHistoryKey = "", prefilledRun = "", formDirty = false;
 const seen = new Set();
@@ -102,14 +102,38 @@ function memoryScope() {
   return {workspace: $("workspace").value, scope: $("memory-scope").value,
     global_authorized: $("memory-scope").value === "global" && $("memory-global-consent").checked};
 }
+function memoryContext() {
+  return {generation: memoryGeneration, scope: memoryScope()};
+}
+function memoryContextCurrent(context) {
+  return context.generation === memoryGeneration && pretty(context.scope) === pretty(memoryScope());
+}
 function resetMemory() {
   editingMemory = null;
   for (const id of ["memory-topic", "memory-content", "memory-source", "memory-expiry"]) $(id).value = "";
   text("memory-editing", "新增条目"); text("memory-save", "明确保存");
 }
-async function loadMemories() {
-  const scope = memoryScope();
-  const value = await api("/api/memory/list", scope);
+function invalidateMemoryScope() {
+  memoryGeneration++;
+  resetMemory(); $("memory-list").replaceChildren();
+  text("memory-status", "范围已变化，请重新查看条目。");
+}
+function setWorkspace(value) {
+  if ($("workspace").value === value) return;
+  $("workspace").value = value;
+  invalidateMemoryScope();
+}
+async function loadMemories(context) {
+  if (!memoryContextCurrent(context)) return;
+  const {scope} = context;
+  let value;
+  try {
+    value = await api("/api/memory/list", scope);
+  } catch (e) {
+    if (memoryContextCurrent(context)) text("memory-status", "读取条目失败：" + e.message + "。请在当前范围重新刷新。");
+    return;
+  }
+  if (!memoryContextCurrent(context)) return;
   const list = $("memory-list"); list.replaceChildren();
   for (const entry of value.entries) {
     const item = node("article", "saved-memory-entry");
@@ -119,8 +143,8 @@ async function loadMemories() {
       node("p", "muted", "条目：" + entry.id + (entry.valid_until ? " · 失效：" + dateText(entry.valid_until) : "")));
     const edit = node("button", "outline compact", "修改此条目"); edit.type = "button";
     edit.addEventListener("click", () => {
-      if (memoryBusy) return;
-      editingMemory = {id: entry.id, version: entry.version, scope};
+      if (memoryBusy || !memoryContextCurrent(context)) return;
+      editingMemory = {id: entry.id, version: entry.version, context};
       $("memory-topic").value = entry.topic; $("memory-content").value = entry.content;
       $("memory-source").value = entry.source; $("memory-kind").value = entry.kind;
       if (entry.valid_until) {
@@ -131,38 +155,56 @@ async function loadMemories() {
       text("memory-save", "明确更新此条目");
     });
     const remove = node("button", "outline compact", "删除此条目"); remove.type = "button";
-    remove.addEventListener("click", () => void memoryOperation(async () => {
-      await api("/api/memory/delete", {...scope, id: entry.id, version: entry.version});
-      resetMemory(); await loadMemories();
-      text("memory-status", "已删除；后续输入排除旧条目及其派生内容。原始审计记录保留。");
-    }));
+    remove.addEventListener("click", () => {
+      if (!memoryContextCurrent(context)) return;
+      void memoryOperation(() => mutateMemory("delete", context, {id: entry.id, version: entry.version}));
+    });
     const actions = node("div", "actions"); actions.append(edit, remove); item.append(actions); list.append(item);
   }
   text("memory-status", value.entries.length + " 条 · " + (scope.scope === "global" ? "全局偏好" : scope.workspace));
 }
+async function mutateMemory(action, context, fields) {
+  if (!memoryContextCurrent(context)) return;
+  const {scope} = context;
+  const label = scope.scope === "global" ? "全局偏好" : "项目 " + scope.workspace;
+  const verb = {create: "新增", update: "更新", delete: "删除"}[action];
+  // A submitted write keeps its original scope, even if the user switches projects while waiting.
+  $("memory-operation-status").hidden = false;
+  text("memory-operation-status", label + "：正在" + verb + "条目。");
+  try {
+    await api("/api/memory/" + action, {...scope, ...fields});
+  } catch (e) {
+    text("memory-operation-status", label + "：" + verb + "未确认：" + e.message + "。请在该范围刷新核对后再操作。");
+    return;
+  }
+  text("memory-operation-status", label + "：已" + verb + "条目；后续输入按最新条目状态检索，原始审计记录保留。");
+  if (!memoryContextCurrent(context)) return;
+  resetMemory(); await loadMemories(context);
+}
 async function memoryOperation(operation) {
   if (memoryBusy) return;
+  const context = memoryContext();
   memoryBusy = true; controls();
-  try { await operation(); }
-  catch (e) { text("memory-status", "操作未确认：" + e.message + "。请刷新核对版本后再操作。"); }
+  try { await operation(context); }
+  catch (e) {
+    if (memoryContextCurrent(context)) text("memory-status", "操作未确认：" + e.message + "。请刷新核对版本后再操作。");
+  }
   finally { memoryBusy = false; controls(); }
 }
 $("memory-refresh").addEventListener("click", () => void memoryOperation(loadMemories));
 $("memory-reset").addEventListener("click", resetMemory);
-for (const id of ["memory-scope", "memory-global-consent", "workspace"]) {
-  $(id).addEventListener("change", () => { resetMemory(); $("memory-list").replaceChildren(); text("memory-status", "范围已变化，请重新查看条目。"); });
+for (const id of ["memory-scope", "memory-global-consent"]) {
+  $(id).addEventListener("change", invalidateMemoryScope);
 }
 $("memory-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  void memoryOperation(async () => {
-    const scope = memoryScope();
-    if (editingMemory && pretty(scope) !== pretty(editingMemory.scope)) throw new Error("作用范围已变化，请重新查看条目");
-    const body = {...scope, topic: $("memory-topic").value, content: $("memory-content").value,
+  void memoryOperation(async (context) => {
+    if (editingMemory && !memoryContextCurrent(editingMemory.context)) throw new Error("作用范围已变化，请重新查看条目");
+    const fields = {topic: $("memory-topic").value, content: $("memory-content").value,
       kind: $("memory-kind").value, source: $("memory-source").value,
       valid_until: $("memory-expiry").value ? new Date($("memory-expiry").value).toISOString() : null};
-    if (editingMemory) Object.assign(body, {id: editingMemory.id, version: editingMemory.version});
-    await api("/api/memory/" + (editingMemory ? "update" : "create"), body);
-    resetMemory(); await loadMemories(); text("memory-status", "已保存；按作用范围及任务关键词用于后续输入。");
+    if (editingMemory) Object.assign(fields, {id: editingMemory.id, version: editingMemory.version});
+    await mutateMemory(editingMemory ? "update" : "create", context, fields);
   });
 });
 function setTab(name, focus = false) {
@@ -402,7 +444,7 @@ function render(value) {
     question?.status === "expired" ? "问题已过期。" : question?.status === "cancelled" ? "问题已取消。" :
     "等待上限 " + duration(question?.wait_timeout_seconds) + "，计入任务总时限。回答仅补充任务信息。");
   if (prefilledRun !== value.run_id && !formDirty) {
-    $("workspace").value = metadata.workspace || $("workspace").value;
+    setWorkspace(metadata.workspace || $("workspace").value);
     $("input-files").value = (metadata.input_files || []).join("\n");
     $("task").value = metadata.task || "";
     text("task-count", $("task").value.length + " 字"); prefilledRun = value.run_id;
@@ -598,7 +640,7 @@ async function chooseSession(continuing) {
     const session = continuing ? await api("/api/sessions/" + snapshot.metadata.session_id) :
       await api("/api/sessions", {workspace: $("workspace").value});
     currentSession = session;
-    $("workspace").value = session.project;
+    setWorkspace(session.project);
     text("session-state", "会话 " + session.session_id + " · 过期时间 " + dateText(session.expires_at));
     if (continuing) { $("task").value = ""; text("task-count", "0 字"); $("task").focus(); }
     formDirty = true; pendingRunRequest = null;
@@ -645,6 +687,7 @@ $("reject").addEventListener("click", () => void action("reject"));
 $("history").addEventListener("change", () => select($("history").value));
 $("task").addEventListener("input", () => { formDirty = true; text("task-count", $("task").value.length + " 字"); });
 $("workspace").addEventListener("input", () => { formDirty = true; currentSession = null;
+  invalidateMemoryScope();
   text("session-state", "项目目录已改变，请新建会话。"); controls(); });
 $("clear-logs").addEventListener("click", clearLogs);
 $("open-trace").addEventListener("click", () => setTab("trace", true));
@@ -679,7 +722,7 @@ $("copy-answer").addEventListener("click", async () => {
 async function boot() {
   try {
     const session = await api("/api/session"); token = session.token;
-    $("workspace").value = session.default_workspace;
+    setWorkspace(session.default_workspace);
     text("network-notice", session.network_available ? "联网已启用：搜索词和待读网址会发送给 Tavily，模型可在预算内自动调用。" :
       session.network_enabled ? "联网不可用：尚未配置 Tavily 密钥。" : "联网默认关闭；启用后搜索词和待读网址会发送给 Tavily。");
     const run = location.hash.slice(1) || localStorage.getItem("harness.run") || "";
