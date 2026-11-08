@@ -20,6 +20,7 @@ from .models import OpenAICompatibleModel
 from .runner import Runner
 from .store import RUN_ID
 from .processes import process_alive
+from .ownership import RunRootError
 
 
 def print_json(value) -> None:
@@ -113,6 +114,11 @@ def main(argv: list[str] | None = None) -> int:
                         "note": "This checks the real-model tool loop, not general task correctness."})
             return 0 if passed else 1
         return 0 if result["status"] in {"completed", "unverified"} else (130 if result["status"] == "cancelled" else 1)
+    except RunRootError as error:
+        print_json({"error": error.code, "message": (
+            "run directory is already in use by another service or task" if error.code == "run_root_in_use"
+            else "run directory ownership is unavailable; no recovery or task was started")})
+        return 2
     except (ValueError, TypeError, OSError) as error:
         # 配置错误仅显示经过脱敏的校验信息；IO 异常使用固定文本，避免泄漏底层细节。
         if type(error) is ValueError:

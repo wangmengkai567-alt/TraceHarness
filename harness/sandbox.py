@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .processes import run_process, TerminationUnconfirmed
 from .store import utc_now
+from .ownership import RunRootLock, locked_run_root
 
 IMAGE = "harness-sandbox:1"
 DOCKER = r"C:\Program Files\Docker\Docker\resources\bin\docker.exe" if os.name == "nt" else "/usr/bin/docker"
@@ -156,7 +157,13 @@ class Sandbox:
                 raise
 
 
-async def recover(root):
+async def recover(root, *, root_lock: RunRootLock | None = None):
+    """未取得目录独占权时，不扫描记录或操作任何容器。"""
+    with locked_run_root(root, root_lock) as owner:
+        await _recover(owner.root)
+
+
+async def _recover(root):
     """Reconcile only recorded names with all ownership labels. Never resume commands."""
     from .store import RunStore, RUN_ID
     for folder in Path(root).iterdir():

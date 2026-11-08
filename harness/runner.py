@@ -33,6 +33,7 @@ from .sessions import SessionError
 from .compaction import parse_summary, summary_prompt, validate_summary
 from .tokens import TokenCounter
 from .memory import Memory, MemoryError, project_scope
+from .ownership import RunRootError, RunRootLock, locked_run_root
 
 T = TypeVar("T")
 
@@ -69,7 +70,21 @@ class Runner:
     async def run(self, task: str, workspace: Path,
                   cancel: asyncio.Event | None = None, *, store: RunStore | None = None,
                   input_files: list[str] | None = None, sessions=None, session_id=None,
-                  session_owner=None, request_id=None, request_signature=None) -> dict:
+                  session_owner=None, request_id=None, request_signature=None,
+                  root_lock: RunRootLock | None = None) -> dict:
+        # CLI/直接调用持锁到执行与清理结束；Web 借用服务生命周期内的同一把锁。
+        with locked_run_root(Path(self.config.runs_dir), root_lock) as owner:
+            if store is not None and store.directory.parent.resolve() != owner.root:
+                raise RunRootError("run_root_lock_mismatch")
+            return await self._run(task, workspace, cancel, store=store, input_files=input_files,
+                sessions=sessions, session_id=session_id, session_owner=session_owner,
+                request_id=request_id, request_signature=request_signature, root_lock=owner)
+
+    async def _run(self, task: str, workspace: Path,
+                   cancel: asyncio.Event | None = None, *, root_lock: RunRootLock,
+                   store: RunStore | None = None, input_files: list[str] | None = None,
+                   sessions=None, session_id=None, session_owner=None,
+                   request_id=None, request_signature=None) -> dict:
         # 先检查任务与目录，随后建立记录、能力包装和本次运行独立的预算/状态。
         if not isinstance(task, str) or not task.strip():
             raise ValueError("task must not be empty")
@@ -79,7 +94,7 @@ class Runner:
         cancel = cancel if cancel is not None else asyncio.Event()
         config = self.config
         network_key = os.environ.get("TAVILY_API_KEY", "")
-        store = store if store is not None else RunStore(Path(config.runs_dir).resolve(), self.secrets)
+        store = store if store is not None else RunStore(root_lock.root, self.secrets)
         if network_key and network_key not in store.secrets:
             store.secrets += (network_key,)
         network = NetworkTools(self.tools, config, store, network_key,
@@ -384,7 +399,7 @@ class Runner:
             store.write_json("long_term_memory.json", {"entries": memory_entries, "references": memory_refs})
             store.emit("long_term_memory_selected", references=memory_refs,
                        sources=[entry["source"] for entry in memory_entries])
-            await controlled(recover(Path(config.runs_dir).resolve()), 60, "sandbox_recovery_timeout")
+            await controlled(recover(root_lock.root, root_lock=root_lock), 60, "sandbox_recovery_timeout")
             for name in input_files or []:
                 candidate = (source_workspace / name).resolve()
                 if candidate.parent == memory.path.parent and candidate.name in {

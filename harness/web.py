@@ -31,6 +31,7 @@ from .contracts import ToolResult
 from .clarification import MAX_ANSWER_CHARS
 from .sessions import Sessions, SessionError
 from .memory import Memory, MemoryError
+from .ownership import RunRootError, RunRootLock
 from urllib.parse import parse_qs, quote
 
 STATIC = Path(__file__).with_name("static")
@@ -83,7 +84,6 @@ class RunManager:
         # model_factory 便于测试注入模型；生产默认使用真实模型适配器。
         config.validate()
         self.config, self.root = config, Path(config.runs_dir).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
         self.secrets = tuple(value for value in secret_values if value)
         self.model_factory = model_factory or (lambda: OpenAICompatibleModel(
             config, os.environ.get("HARNESS_API_KEY", "")))
@@ -100,6 +100,8 @@ class RunManager:
         if password:
             self.secrets += (password,)
         self.memory = Memory(config, self.secrets)
+        # 第二个服务即使使用不同端口，也必须在恢复清理和创建记录前退出。
+        self.root_lock = RunRootLock(self.root).acquire()
 
     def folder(self, run_id: str) -> Path:
         # 从受校验的运行 ID 定位记录目录，拒绝符号链接及越出记录根目录的路径。
@@ -132,6 +134,7 @@ class RunManager:
 
     async def start_locked(self, body: dict) -> dict:
         # 校验任务、工作目录和单任务限制后，才创建运行记录并异步调度。
+        self.root_lock.require(self.root)
         if self.process_control_blocked:
             raise APIError(409, "process_termination_unconfirmed_restart_required")
         if set(body) - {"task", "workspace", "mode", "input_files", "session_id", "request_id"}:
@@ -202,7 +205,7 @@ class RunManager:
             result = await runner.run(
                 task, workspace, record.cancel, store=record.store, input_files=names,
                 sessions=self.sessions, session_id=session_id, session_owner=self.owner, request_id=request_id,
-                request_signature=record.request_signature)
+                request_signature=record.request_signature, root_lock=self.root_lock)
             self.process_control_blocked = runner.termination_unconfirmed
             record.status = result["status"]
         except asyncio.CancelledError:
@@ -510,11 +513,21 @@ class RunManager:
 
     async def shutdown(self):
         # 关闭服务时先发取消信号，再等待后台任务完成，使进程树清理和结果落盘有机会结束。
-        if self.active and self.active.job and not self.active.job.done():
-            self.active.cancel.set()
-        if self.jobs:
-            await asyncio.gather(*list(self.jobs), return_exceptions=True)
-        await self.sessions.close()
+        async with self.start_lock:
+            if self.active and self.active.job and not self.active.job.done():
+                self.active.cancel.set()
+            pending = asyncio.gather(*list(self.jobs), return_exceptions=True)
+            try:
+                try:
+                    await asyncio.shield(pending)
+                except asyncio.CancelledError:
+                    await pending
+                    raise
+            finally:
+                try:
+                    await self.sessions.close()
+                finally:
+                    self.root_lock.close()
 
 
 # 页面仅允许同源脚本、样式和连接，并禁止缓存、内容类型猜测及被外站嵌入。
@@ -536,11 +549,13 @@ def create_app(manager: RunManager, port: int = 8765) -> FastAPI:
     async def lifespan(app):
         # FastAPI 关闭阶段等待管理器完成任务清理。
         try:
-            await recover(manager.root)
-        except (TerminationUnconfirmed, OSError, ValueError, KeyError):
-            manager.process_control_blocked = True
-        yield
-        await manager.shutdown()
+            try:
+                await recover(manager.root, root_lock=manager.root_lock)
+            except (TerminationUnconfirmed, OSError, ValueError, KeyError):
+                manager.process_control_blocked = True
+            yield
+        finally:
+            await manager.shutdown()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.manager = manager
@@ -631,6 +646,10 @@ def create_app(manager: RunManager, port: int = 8765) -> FastAPI:
                   else 409 if error.code in {"memory_version_conflict", "memory_topic_conflict", "memory_audit_limit", "memory_entry_limit"} else 400)
         return JSONResponse({"error": error.code}, status_code=status)
 
+    @app.exception_handler(RunRootError)
+    async def run_root_error(request, error):
+        return JSONResponse({"error": error.code}, status_code=503)
+
     return app
 
 
@@ -639,11 +658,11 @@ async def serve(config: Config, port: int = 8765):
     import uvicorn
     manager = RunManager(config, secret_values=tuple(os.environ.get(key, "") for key in (
         "HARNESS_API_KEY", "TAVILY_API_KEY")))
-    app = create_app(manager, port)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,
-                            access_log=False, proxy_headers=False, log_level="warning"))
-    print(f"Harness Web: http://127.0.0.1:{port}", flush=True)
     try:
+        app = create_app(manager, port)
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port,
+                                access_log=False, proxy_headers=False, log_level="warning"))
+        print(f"Harness Web: http://127.0.0.1:{port}", flush=True)
         await server.serve()
     finally:
         await manager.shutdown()
