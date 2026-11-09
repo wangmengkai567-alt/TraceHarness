@@ -476,7 +476,10 @@ class RunManager:
             folder = self.folder(run_id)
             if not (folder / "result.json").is_file():
                 raise APIError(409, "run_not_finished")
-            query = parse_qs(action.partition("?")[2], strict_parsing=True)
+            try:
+                query = parse_qs(action.partition("?")[2], strict_parsing=True)
+            except ValueError:
+                raise APIError(400, "invalid_artifact_path") from None
             if set(query) != {"path"} or len(query["path"]) != 1:
                 raise APIError(400, "invalid_artifact_path")
             name = query["path"][0]
